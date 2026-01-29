@@ -599,7 +599,6 @@ class _DebugWindow(QWidget):
 
 
 def main() -> int:
-
     application_arguments = sys.argv if sys.argv and sys.argv[0] else ["steppy"]
     application = QApplication(application_arguments)
 
