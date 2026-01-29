@@ -1,6 +1,9 @@
 ## Steppy
 
-Steppy is a rhythm game frontend for dance pad setups.
+Steppy is a rhythm game for dance pads.  This is a personal project, feel free to modify for your own purposes in keeping with MIT license.
+
+* Phone app controller
+* Youtube sourced songs
 
 When idle or between songs, Steppy displays a QR code that opens a local webpage for song selection and controls.
 
