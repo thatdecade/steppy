@@ -1,179 +1,306 @@
-# overlay_renderer.py
+"""\
+overlay_renderer.py
+
+QPainter overlay for the gameplay harness.
+
+This is intentionally a minimal renderer:
+- Draw lanes and receptors
+- Draw scrolling notes
+- Draw a simple judgement and score readout
+
+Theme integration
+- Attempts to load a few optional images from theme.py
+- Falls back to basic shapes if images are not found
+
+Note on StepMania themes
+- StepMania themes typically reference gameplay note graphics via metrics and Lua,
+  and the actual arrow textures often live in NoteSkins (not in Themes).
+- For the Simply Love theme folder you provided, this module hardcodes two existing
+  images as a pragmatic test step:
+    - BGAnimations/_modules/TestInput Pad/highlight.png as the receptor
+    - BGAnimations/_modules/TestInput Pad/highlightarrow.png as the note
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Optional
 
-from PyQt6.QtCore import QObject, Qt, QTimer
-from PyQt6.QtGui import QFont, QPainter, QPen
+from PyQt6.QtCore import QPointF, QRectF, Qt
+from PyQt6.QtGui import QFont, QPainter, QPaintEvent, QPen, QPixmap
 from PyQt6.QtWidgets import QWidget
 
-from chart_models import GameplayStats, JudgementEvent, JudgementKind
-from game_clock import GameClock
-from input_router import InputRouter
-from note_scheduler import NoteScheduler, NoteStatus
+from gameplay_models import JudgementEvent
+from judge import JudgeEngine
+from note_scheduler import NoteScheduler
+from theme import ThemeError, get_theme
+from timing_model import TimingModel
 
 
-@dataclass(frozen=True)
+@dataclass
 class OverlayConfig:
-    approach_seconds: float = 2.0
-    lookback_seconds: float = 0.35
-    target_fps: int = 60
+    lanes_count: int = 4
+    pixels_per_second: float = 480.0
+    lookahead_seconds: float = 4.0
+    lookback_seconds: float = 1.0
+    receptor_radius_pixels: float = 12.0
+    note_width_fraction: float = 0.42
+    note_height_pixels: float = 16.0
 
 
-class OverlayRenderer(QWidget):
+class GameplayOverlayWidget(QWidget):
     def __init__(
         self,
-        game_clock: GameClock,
+        timing_model: TimingModel,
         note_scheduler: NoteScheduler,
-        input_router: InputRouter,
+        judge_engine: JudgeEngine,
         *,
+        overlay_config: Optional[OverlayConfig] = None,
         parent: Optional[QWidget] = None,
-        config: Optional[OverlayConfig] = None,
     ) -> None:
         super().__init__(parent)
-        self._game_clock = game_clock
-        self._note_scheduler = note_scheduler
-        self._input_router = input_router
-        self._config = config or OverlayConfig()
-
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAutoFillBackground(False)
 
-        self._render_timer = QTimer(self)
-        self._render_timer.setInterval(max(5, int(1000 / max(1, int(self._config.target_fps)))))
-        self._render_timer.timeout.connect(self.update)
+        self._timing_model = timing_model
+        self._note_scheduler = note_scheduler
+        self._judge_engine = judge_engine
+        self._overlay_config = overlay_config or OverlayConfig()
 
-        self._latest_stats: Optional[GameplayStats] = None
+        self._state_text: str = "unknown"
+        self._lane_flash_until_song_time_seconds = [0.0 for _ in range(self._overlay_config.lanes_count)]
 
-        self._recent_judgement_by_lane: Dict[int, Tuple[JudgementKind, float]] = {}
+        self._receptor_pixmap: Optional[QPixmap] = None
+        self._note_pixmap: Optional[QPixmap] = None
+        self._load_theme_assets_best_effort()
 
-    def start(self) -> None:
-        if not self._render_timer.isActive():
-            self._render_timer.start()
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
-    def stop(self) -> None:
-        if self._render_timer.isActive():
-            self._render_timer.stop()
-        self._recent_judgement_by_lane.clear()
-        self._latest_stats = None
+    def set_state_text(self, state_text: str) -> None:
+        self._state_text = (state_text or "").strip() or "unknown"
         self.update()
 
-    def on_judgement(self, judgement_event: JudgementEvent) -> None:
-        song_time_seconds = float(self._game_clock.song_time_seconds())
-        self._recent_judgement_by_lane[int(judgement_event.lane)] = (judgement_event.judgement, song_time_seconds)
+    def flash_lane(self, lane: int, *, duration_seconds: float = 0.10) -> None:
+        lane_index = int(lane)
+        if lane_index < 0 or lane_index >= len(self._lane_flash_until_song_time_seconds):
+            return
+        song_time_seconds = float(self._timing_model.song_time_seconds)
+        self._lane_flash_until_song_time_seconds[lane_index] = song_time_seconds + float(max(0.0, duration_seconds))
         self.update()
 
-    def on_stats(self, stats: GameplayStats) -> None:
-        self._latest_stats = stats
-        self.update()
+    def _load_theme_assets_best_effort(self) -> None:
+        try:
+            active_theme = get_theme()
+        except ThemeError:
+            return
 
-    def paintEvent(self, event) -> None:  # noqa: N802
+        # The original Steppy-only paths are still checked first so custom Steppy themes work.
+        # Then we fall back to known existing files in the Simply Love theme folder you provided.
+        receptor_path = active_theme.resolve_first_existing(
+            [
+                # Steppy custom theme convention (preferred)
+                "Graphics/Steppy/receptor.png",
+                "Graphics/SteppyGameplay/receptor.png",
+                "Graphics/receptor.png",
+                # Simply Love pragmatic hardcode
+                "BGAnimations/_modules/TestInput Pad/highlight.png",
+                "BGAnimations/_modules/TestInput Pad/highlightgreen.png",
+                "BGAnimations/_modules/TestInput Pad/highlightred.png",
+            ]
+        )
+        if receptor_path is not None:
+            self._receptor_pixmap = QPixmap(str(receptor_path))
+
+        note_path = active_theme.resolve_first_existing(
+            [
+                # Steppy custom theme convention (preferred)
+                "Graphics/Steppy/note.png",
+                "Graphics/SteppyGameplay/note.png",
+                "Graphics/note.png",
+                # Simply Love pragmatic hardcode
+                "BGAnimations/_modules/TestInput Pad/highlightarrow.png",
+                "BGAnimations/_shared background/arrow_tex.png",
+                "BGAnimations/ScreenSelectMusicCasual overlay/img/arrow.png",
+            ]
+        )
+        if note_path is not None:
+            self._note_pixmap = QPixmap(str(note_path))
+
+    def paintEvent(self, paint_event: QPaintEvent) -> None:
+        _ = paint_event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        widget_width = max(1, int(self.width()))
-        widget_height = max(1, int(self.height()))
+        widget_width = float(max(1, self.width()))
+        widget_height = float(max(1, self.height()))
 
-        lane_count = 4
-        lane_width = widget_width / float(lane_count)
+        lanes_count = int(self._overlay_config.lanes_count)
+        lane_width = widget_width / float(lanes_count)
+        receptor_y = widget_height * 0.82
 
-        receptor_y = widget_height * 0.80
-        travel_pixels = widget_height * 0.70
+        song_time_seconds = float(self._timing_model.song_time_seconds)
 
-        song_time_seconds = float(self._game_clock.song_time_seconds())
-
-        visible_notes = self._note_scheduler.get_visible_notes(
-            song_time_seconds=song_time_seconds,
-            lookback_seconds=self._config.lookback_seconds,
-            lookahead_seconds=self._config.approach_seconds,
-        )
-
-        # Background is transparent. Draw minimal lane guides.
-        painter.setPen(QPen(Qt.GlobalColor.white, 1))
-        for lane_index in range(lane_count + 1):
-            x = int(lane_index * lane_width)
-            painter.drawLine(x, 0, x, widget_height)
-
-        # Receptors and pressed state.
-        pressed_lanes = self._input_router.pressed_lanes()
-        for lane_index in range(lane_count):
-            lane_center_x = int((lane_index + 0.5) * lane_width)
-            receptor_radius = int(min(lane_width, widget_height) * 0.04)
-
-            if lane_index in pressed_lanes:
-                painter.setPen(QPen(Qt.GlobalColor.yellow, 3))
-            else:
-                painter.setPen(QPen(Qt.GlobalColor.white, 2))
-
-            painter.drawEllipse(lane_center_x - receptor_radius, int(receptor_y) - receptor_radius, receptor_radius * 2, receptor_radius * 2)
-
-        # Notes.
-        for scheduled_note in visible_notes:
-            if scheduled_note.status != NoteStatus.PENDING:
-                continue
-
-            note_event = scheduled_note.note_event
-            lane_index = int(note_event.lane)
-            if not (0 <= lane_index < lane_count):
-                continue
-
-            remaining_seconds = float(note_event.time_seconds - song_time_seconds)
-            clamped_fraction = remaining_seconds / float(max(0.001, self._config.approach_seconds))
-            note_y = int(receptor_y - travel_pixels * clamped_fraction)
-
-            lane_left_x = int(lane_index * lane_width)
-            note_box_width = int(lane_width * 0.45)
-            note_box_height = int(widget_height * 0.03)
-
-            note_x = lane_left_x + int((lane_width - note_box_width) / 2)
-
-            painter.setPen(QPen(Qt.GlobalColor.cyan, 2))
-            painter.drawRect(note_x, note_y - int(note_box_height / 2), note_box_width, note_box_height)
-
-        # Recent judgement flashes.
-        judgement_fade_seconds = 0.6
-        painter.setFont(QFont("Sans Serif", 12))
-
-        for lane_index in range(lane_count):
-            if lane_index not in self._recent_judgement_by_lane:
-                continue
-
-            judgement_kind, judgement_time_seconds = self._recent_judgement_by_lane[lane_index]
-            age_seconds = song_time_seconds - float(judgement_time_seconds)
-            if age_seconds > judgement_fade_seconds:
-                continue
-
-            lane_center_x = int((lane_index + 0.5) * lane_width)
-            text_y = int(receptor_y - widget_height * 0.10)
-
-            if judgement_kind == JudgementKind.PERFECT:
-                painter.setPen(QPen(Qt.GlobalColor.green, 2))
-            elif judgement_kind == JudgementKind.GREAT:
-                painter.setPen(QPen(Qt.GlobalColor.blue, 2))
-            elif judgement_kind == JudgementKind.GOOD:
-                painter.setPen(QPen(Qt.GlobalColor.magenta, 2))
-            else:
-                painter.setPen(QPen(Qt.GlobalColor.red, 2))
-
-            painter.drawText(lane_center_x - 40, text_y, 80, 30, int(Qt.AlignmentFlag.AlignCenter), judgement_kind.value)
-
-        # HUD.
-        painter.setFont(QFont("Sans Serif", 10))
-        painter.setPen(QPen(Qt.GlobalColor.white, 1))
-
-        stats_text = ""
-        if self._latest_stats is not None:
-            stats_text = (
-                f"score {self._latest_stats.score}  combo {self._latest_stats.combo}  "
-                f"p {self._latest_stats.perfect_count}  g {self._latest_stats.great_count}  "
-                f"ok {self._latest_stats.good_count}  m {self._latest_stats.miss_count}"
-            )
-
-        clock_text = f"time {song_time_seconds:.3f}  player {self._game_clock.player_time_seconds():.3f}  state {self._game_clock.player_state_name()}"
-
-        painter.drawText(10, 20, widget_width - 20, 18, int(Qt.AlignmentFlag.AlignLeft), clock_text)
-        painter.drawText(10, 40, widget_width - 20, 18, int(Qt.AlignmentFlag.AlignLeft), stats_text)
+        self._draw_lanes(painter, lane_width, widget_height, lanes_count)
+        self._draw_receptors(painter, lane_width, receptor_y, lanes_count, song_time_seconds)
+        self._draw_notes(painter, lane_width, receptor_y, lanes_count, song_time_seconds)
+        self._draw_hud(painter, song_time_seconds)
 
         painter.end()
+
+    def _draw_lanes(self, painter: QPainter, lane_width: float, widget_height: float, lanes_count: int) -> None:
+        pen = QPen()
+        pen.setWidth(1)
+        pen.setColor(Qt.GlobalColor.white)
+        painter.setPen(pen)
+
+        for lane_index in range(lanes_count + 1):
+            x_position = lane_width * float(lane_index)
+            painter.drawLine(int(x_position), 0, int(x_position), int(widget_height))
+
+    def _draw_receptors(
+        self,
+        painter: QPainter,
+        lane_width: float,
+        receptor_y: float,
+        lanes_count: int,
+        song_time_seconds: float,
+    ) -> None:
+        for lane_index in range(lanes_count):
+            lane_center_x = (lane_width * float(lane_index)) + (lane_width * 0.5)
+
+            flash_active = song_time_seconds <= float(self._lane_flash_until_song_time_seconds[lane_index])
+            if flash_active:
+                painter.setOpacity(0.9)
+            else:
+                painter.setOpacity(0.65)
+
+            if self._receptor_pixmap is not None and not self._receptor_pixmap.isNull():
+                target_size = float(self._overlay_config.receptor_radius_pixels * 2.2)
+                target_rect = QRectF(
+                    lane_center_x - (target_size * 0.5),
+                    receptor_y - (target_size * 0.5),
+                    target_size,
+                    target_size,
+                )
+                painter.drawPixmap(target_rect, self._receptor_pixmap, QRectF(self._receptor_pixmap.rect()))
+            else:
+                pen = QPen()
+                pen.setWidth(2)
+                pen.setColor(Qt.GlobalColor.white)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                radius = float(self._overlay_config.receptor_radius_pixels)
+                painter.drawEllipse(QPointF(lane_center_x, receptor_y), radius, radius)
+
+        painter.setOpacity(1.0)
+
+    def _draw_notes(
+        self,
+        painter: QPainter,
+        lane_width: float,
+        receptor_y: float,
+        lanes_count: int,
+        song_time_seconds: float,
+    ) -> None:
+        visible_notes = self._note_scheduler.visible_notes(
+            song_time_seconds=song_time_seconds,
+            window_before_seconds=float(self._overlay_config.lookback_seconds),
+            window_after_seconds=float(self._overlay_config.lookahead_seconds),
+        )
+
+        for scheduled_note in visible_notes:
+            note_lane = int(scheduled_note.note_event.lane)
+            if note_lane < 0 or note_lane >= lanes_count:
+                continue
+
+            note_time_seconds = float(scheduled_note.note_event.time_seconds)
+            time_until_hit = float(note_time_seconds - song_time_seconds)
+
+            note_y = receptor_y - (time_until_hit * float(self._overlay_config.pixels_per_second))
+            if note_y < -80.0 or note_y > (self.height() + 80.0):
+                continue
+
+            lane_center_x = (lane_width * float(note_lane)) + (lane_width * 0.5)
+
+            note_width = lane_width * float(self._overlay_config.note_width_fraction)
+            note_height = float(self._overlay_config.note_height_pixels)
+
+            note_rect = QRectF(
+                lane_center_x - (note_width * 0.5),
+                note_y - (note_height * 0.5),
+                note_width,
+                note_height,
+            )
+
+            if scheduled_note.is_judged:
+                painter.setOpacity(0.18)
+            else:
+                painter.setOpacity(0.85)
+
+            if self._note_pixmap is not None and not self._note_pixmap.isNull():
+                painter.drawPixmap(note_rect, self._note_pixmap, QRectF(self._note_pixmap.rect()))
+            else:
+                pen = QPen()
+                pen.setWidth(2)
+                pen.setColor(Qt.GlobalColor.cyan)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRoundedRect(note_rect, 2.0, 2.0)
+
+        painter.setOpacity(1.0)
+
+    def _draw_hud(self, painter: QPainter, song_time_seconds: float) -> None:
+        painter.setOpacity(1.0)
+        painter.setPen(Qt.GlobalColor.white)
+        painter.setFont(QFont("Arial", 10))
+
+        player_time_seconds = float(self._timing_model.player_time_seconds)
+        state_text = self._state_text
+
+        score_state = self._judge_engine.score_state
+
+        hud_lines = [
+            f"time {song_time_seconds:.3f}   player {player_time_seconds:.3f}   state {state_text}",
+            (
+                "score "
+                + str(score_state.score)
+                + "  combo "
+                + str(score_state.combo)
+                + "  p "
+                + str(score_state.perfect_count)
+                + "  g "
+                + str(score_state.great_count)
+                + "  ok "
+                + str(score_state.good_count)
+                + "  m "
+                + str(score_state.miss_count)
+            ),
+        ]
+
+        y_position = 18
+        for line_text in hud_lines:
+            painter.drawText(12, y_position, line_text)
+            y_position += 18
+
+        recent_judgements = self._judge_engine.recent_judgements()
+        if recent_judgements:
+            last_judgement = recent_judgements[-1]
+            self._draw_last_judgement(painter, last_judgement)
+
+    def _draw_last_judgement(self, painter: QPainter, judgement_event: JudgementEvent) -> None:
+        judgement_text = (judgement_event.judgement or "").strip().lower() or ""
+        if not judgement_text:
+            return
+
+        painter.setFont(QFont("Arial", 12))
+
+        if judgement_text == "miss":
+            painter.setPen(Qt.GlobalColor.red)
+        else:
+            painter.setPen(Qt.GlobalColor.green)
+
+        lane_width = float(max(1, self.width())) / float(self._overlay_config.lanes_count)
+        lane_center_x = (lane_width * float(judgement_event.lane)) + (lane_width * 0.5)
+        receptor_y = float(max(1, self.height())) * 0.82
+
+        painter.drawText(int(lane_center_x - 20), int(receptor_y - 18), judgement_text)

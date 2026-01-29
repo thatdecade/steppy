@@ -1,126 +1,97 @@
-# input_router.py
+"""\
+input_router.py
+
+Keyboard input mapping for the standalone gameplay harness.
+
+Mapping
+- W: lane 0
+- A: lane 1
+- S: lane 2
+- D: lane 3
+
+Design goals
+- Debounce key repeat
+- Emit timestamped lane events using the gameplay clock
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Set
+from typing import Callable, Dict, Optional
 
-from PyQt6.QtCore import QObject, QEvent, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QKeyEvent
-from PyQt6.QtWidgets import QApplication, QLineEdit, QTextEdit, QWidget
+from PyQt6.QtCore import Qt
 
-from chart_models import LaneInputEvent
-from game_clock import GameClock
+from gameplay_models import InputEvent
 
 
-@dataclass(frozen=True)
-class KeyEventPayload:
-    key: int
-    is_pressed: bool
-    is_auto_repeat: bool
+TimeProvider = Callable[[], float]
+
+
+@dataclass
+class InputRouterStats:
+    total_keypresses: int = 0
+    last_lane: Optional[int] = None
 
 
 class InputRouter(QObject):
-    laneInputEvent = pyqtSignal(object)  # LaneInputEvent
+    inputEvent = pyqtSignal(object)  # InputEvent
 
-    def __init__(self, game_clock: GameClock, *, parent: Optional[QObject] = None) -> None:
+    def __init__(self, song_time_provider: TimeProvider, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
-        self._game_clock = game_clock
+        self._song_time_provider = song_time_provider
+        self._enabled = True
 
         self._key_to_lane: Dict[int, int] = {
-            int(Qt.Key.Key_A): 0,
-            int(Qt.Key.Key_S): 1,
-            int(Qt.Key.Key_W): 2,
+            int(Qt.Key.Key_W): 0,
+            int(Qt.Key.Key_A): 1,
+            int(Qt.Key.Key_S): 2,
             int(Qt.Key.Key_D): 3,
         }
 
-        self._pressed_lanes: Set[int] = set()
-        self._installed_on_application: Optional[QApplication] = None
+        self._pressed_keys: set[int] = set()
+        self._stats = InputRouterStats()
 
-        self._ignore_when_typing: bool = True
+    def set_enabled(self, enabled: bool) -> None:
+        self._enabled = bool(enabled)
+        if not self._enabled:
+            self._pressed_keys.clear()
 
-    def set_ignore_when_typing(self, ignore_when_typing: bool) -> None:
-        self._ignore_when_typing = bool(ignore_when_typing)
+    def stats(self) -> InputRouterStats:
+        return self._stats
 
-    def pressed_lanes(self) -> Set[int]:
-        return set(self._pressed_lanes)
-
-    def install_on_application(self, qt_application: QApplication) -> None:
-        if self._installed_on_application is not None:
-            return
-        self._installed_on_application = qt_application
-        qt_application.installEventFilter(self)
-
-    def remove_from_application(self) -> None:
-        if self._installed_on_application is None:
-            return
-        self._installed_on_application.removeEventFilter(self)
-        self._installed_on_application = None
-
-    # Future integration: connect a Qt signal to this slot to feed key events from control_api.
-    def on_key_event(self, key: int, is_pressed: bool, is_auto_repeat: bool) -> None:
-        payload = KeyEventPayload(key=int(key), is_pressed=bool(is_pressed), is_auto_repeat=bool(is_auto_repeat))
-        self._handle_key_payload(payload)
-
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
-        event_type = event.type()
-        if event_type not in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+    def handle_key_press(self, key_event: QKeyEvent) -> bool:
+        if not self._enabled:
             return False
 
-        if self._ignore_when_typing and self._focus_is_text_entry():
+        if key_event.isAutoRepeat():
             return False
 
-        if not isinstance(event, QKeyEvent):
+        key_code = int(key_event.key())
+        lane = self._key_to_lane.get(key_code)
+        if lane is None:
             return False
 
-        is_pressed = (event_type == QEvent.Type.KeyPress)
-        payload = KeyEventPayload(
-            key=int(event.key()),
-            is_pressed=bool(is_pressed),
-            is_auto_repeat=bool(event.isAutoRepeat()),
-        )
-        self._handle_key_payload(payload)
-        return False
-
-    def _handle_key_payload(self, payload: KeyEventPayload) -> None:
-        if payload.is_auto_repeat:
-            return
-
-        if payload.key not in self._key_to_lane:
-            return
-
-        lane = int(self._key_to_lane[payload.key])
-
-        if payload.is_pressed:
-            if lane in self._pressed_lanes:
-                return
-            self._pressed_lanes.add(lane)
-        else:
-            if lane not in self._pressed_lanes:
-                return
-            self._pressed_lanes.remove(lane)
-
-        lane_input_event = LaneInputEvent(
-            time_seconds=float(self._game_clock.song_time_seconds()),
-            lane=lane,
-            is_pressed=bool(payload.is_pressed),
-        )
-        self.laneInputEvent.emit(lane_input_event)
-
-    def _focus_is_text_entry(self) -> bool:
-        application = QApplication.instance()
-        if application is None:
-            return False
-
-        focus_widget = application.focusWidget()
-        if focus_widget is None:
-            return False
-
-        if isinstance(focus_widget, (QLineEdit, QTextEdit)):
+        if key_code in self._pressed_keys:
             return True
 
-        # Some custom widgets embed QLineEdit children.
-        if isinstance(focus_widget, QWidget):
-            if focus_widget.findChild(QLineEdit) is not None:
-                return True
+        self._pressed_keys.add(key_code)
 
-        return False
+        input_time_seconds = float(self._song_time_provider())
+        input_event = InputEvent(time_seconds=input_time_seconds, lane=int(lane))
+        self._stats.total_keypresses += 1
+        self._stats.last_lane = int(lane)
+
+        self.inputEvent.emit(input_event)
+        return True
+
+    def handle_key_release(self, key_event: QKeyEvent) -> bool:
+        if key_event.isAutoRepeat():
+            return False
+
+        key_code = int(key_event.key())
+        if key_code in self._pressed_keys:
+            self._pressed_keys.remove(key_code)
+
+        return key_code in self._key_to_lane

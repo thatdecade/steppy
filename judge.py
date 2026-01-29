@@ -1,169 +1,177 @@
-# judge.py
+"""\
+judge.py
+
+Judgement and scoring.
+
+This module is pure gameplay logic, with no rendering.
+
+Rules in the harness are intentionally simple:
+- One note per lane at a time
+- Hit is on key press
+- Windows are configurable
+
+Pausing behavior
+- The harness controller simply stops calling update methods while paused.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, List, Optional
 
-from PyQt6.QtCore import QObject, pyqtSignal
-
-from chart_models import GameplayStats, JudgementEvent, JudgementKind, LaneInputEvent
-from note_scheduler import NoteScheduler
+from gameplay_models import InputEvent, JudgementEvent
+from note_scheduler import NoteScheduler, ScheduledNote
 
 
-@dataclass(frozen=True)
-class JudgeConfig:
-    perfect_window_seconds: float = 0.050
-    great_window_seconds: float = 0.100
-    good_window_seconds: float = 0.160
-    miss_window_seconds: float = 0.220
+@dataclass
+class JudgementWindows:
+    perfect_seconds: float = 0.05
+    great_seconds: float = 0.10
+    good_seconds: float = 0.15
+    miss_seconds: float = 0.20
 
-    perfect_score: int = 3
-    great_score: int = 2
-    good_score: int = 1
-    miss_score: int = 0
+    def classify_delta(self, delta_seconds: float) -> str:
+        absolute_delta = abs(float(delta_seconds))
+        if absolute_delta <= self.perfect_seconds:
+            return "perfect"
+        if absolute_delta <= self.great_seconds:
+            return "great"
+        if absolute_delta <= self.good_seconds:
+            return "good"
+        return "miss"
 
 
-class Judge(QObject):
-    judgementEmitted = pyqtSignal(object)  # JudgementEvent
-    statsUpdated = pyqtSignal(object)  # GameplayStats
+@dataclass
+class ScoreState:
+    score: int = 0
+    combo: int = 0
+    max_combo: int = 0
+    perfect_count: int = 0
+    great_count: int = 0
+    good_count: int = 0
+    miss_count: int = 0
 
-    def __init__(self, note_scheduler: NoteScheduler, *, config: Optional[JudgeConfig] = None, parent: Optional[QObject] = None) -> None:
-        super().__init__(parent)
+    def apply_judgement(self, judgement: str) -> None:
+        judgement_normalized = (judgement or "").strip().lower()
+        if judgement_normalized == "perfect":
+            self.perfect_count += 1
+            self.combo += 1
+            self.score += 3
+        elif judgement_normalized == "great":
+            self.great_count += 1
+            self.combo += 1
+            self.score += 2
+        elif judgement_normalized == "good":
+            self.good_count += 1
+            self.combo += 1
+            self.score += 1
+        else:
+            self.miss_count += 1
+            self.combo = 0
+
+        if self.combo > self.max_combo:
+            self.max_combo = self.combo
+
+
+class JudgeEngine:
+    def __init__(
+        self,
+        note_scheduler: NoteScheduler,
+        judgement_windows: Optional[JudgementWindows] = None,
+    ) -> None:
         self._note_scheduler = note_scheduler
-        self._config = config or JudgeConfig()
+        self._judgement_windows = judgement_windows or JudgementWindows()
+        self._score_state = ScoreState()
+        self._recent_judgements: List[JudgementEvent] = []
 
-        self._combo: int = 0
-        self._max_combo: int = 0
-        self._score: int = 0
+    @property
+    def score_state(self) -> ScoreState:
+        return self._score_state
 
-        self._perfect_count: int = 0
-        self._great_count: int = 0
-        self._good_count: int = 0
-        self._miss_count: int = 0
+    @property
+    def judgement_windows(self) -> JudgementWindows:
+        return self._judgement_windows
+
+    def clear_recent_judgements(self) -> None:
+        self._recent_judgements.clear()
+
+    def recent_judgements(self) -> List[JudgementEvent]:
+        return list(self._recent_judgements)
 
     def reset(self) -> None:
-        self._combo = 0
-        self._max_combo = 0
-        self._score = 0
-        self._perfect_count = 0
-        self._great_count = 0
-        self._good_count = 0
-        self._miss_count = 0
-        self._emit_stats()
+        self._note_scheduler.reset()
+        self._score_state = ScoreState()
+        self._recent_judgements.clear()
 
-    def on_lane_input_event(self, lane_input_event: LaneInputEvent) -> None:
-        if not lane_input_event.is_pressed:
-            return
+    def on_input_event(self, input_event: InputEvent) -> Optional[JudgementEvent]:
+        lane = int(input_event.lane)
+        hit_time_seconds = float(input_event.time_seconds)
 
-        nearest_result = self._note_scheduler.find_nearest_pending_note_in_lane(
-            lane=lane_input_event.lane,
-            song_time_seconds=lane_input_event.time_seconds,
-            max_abs_window_seconds=self._config.miss_window_seconds,
+        candidate_note = self._note_scheduler.find_nearest_unjudged_note(
+            lane=lane,
+            target_time_seconds=hit_time_seconds,
+            max_window_seconds=self._judgement_windows.miss_seconds,
         )
 
-        if nearest_result is None:
-            return
-
-        note_index, delta_seconds = nearest_result
-        abs_delta_seconds = abs(float(delta_seconds))
-
-        judgement_kind = self._classify_hit(abs_delta_seconds)
-        if judgement_kind is None:
-            return
-
-        note_event = self._note_scheduler.get_note(note_index)
-        note_time_seconds = float(note_event.time_seconds) if note_event is not None else None
-
-        if judgement_kind == JudgementKind.MISS:
-            # If you are close enough to be considered a miss, consume the note as missed.
-            self._note_scheduler.mark_missed_up_to(
-                song_time_seconds=(note_time_seconds or lane_input_event.time_seconds) + self._config.miss_window_seconds + 0.0001,
-                miss_window_seconds=self._config.miss_window_seconds,
+        if candidate_note is None:
+            self._score_state.apply_judgement("miss")
+            judgement_event = JudgementEvent(
+                time_seconds=hit_time_seconds,
+                lane=lane,
+                note_time_seconds=hit_time_seconds,
+                delta_seconds=0.0,
+                judgement="miss",
             )
-            self._apply_miss()
-        else:
-            self._note_scheduler.mark_hit(note_index)
-            self._apply_hit(judgement_kind)
+            self._recent_judgements.append(judgement_event)
+            return judgement_event
 
-        emitted_event = JudgementEvent(
-            time_seconds=float(lane_input_event.time_seconds),
-            lane=int(lane_input_event.lane),
-            judgement=judgement_kind,
-            delta_seconds=float(delta_seconds),
+        note_time_seconds = float(candidate_note.note_event.time_seconds)
+        delta_seconds = float(hit_time_seconds - note_time_seconds)
+        judgement = self._judgement_windows.classify_delta(delta_seconds)
+
+        candidate_note.is_judged = True
+        candidate_note.judgement = judgement
+        candidate_note.judgement_delta_seconds = delta_seconds
+
+        self._note_scheduler.advance_lane_index(lane)
+
+        self._score_state.apply_judgement(judgement)
+
+        judgement_event = JudgementEvent(
+            time_seconds=hit_time_seconds,
+            lane=lane,
             note_time_seconds=note_time_seconds,
+            delta_seconds=delta_seconds,
+            judgement=judgement,
         )
-        self.judgementEmitted.emit(emitted_event)
-        self._emit_stats()
+        self._recent_judgements.append(judgement_event)
+        return judgement_event
 
-    def update_for_misses(self, *, song_time_seconds: float) -> None:
-        missed_note_indexes = self._note_scheduler.mark_missed_up_to(
+    def update_for_time(self, song_time_seconds: float) -> List[JudgementEvent]:
+        missed_notes = self._note_scheduler.unjudged_notes_past_miss_window(
             song_time_seconds=float(song_time_seconds),
-            miss_window_seconds=self._config.miss_window_seconds,
+            miss_window_seconds=self._judgement_windows.miss_seconds,
         )
 
-        if not missed_note_indexes:
-            return
+        miss_events: List[JudgementEvent] = []
+        for missed_note in missed_notes:
+            missed_note.is_judged = True
+            missed_note.judgement = "miss"
+            missed_note.judgement_delta_seconds = None
 
-        for note_index in missed_note_indexes:
-            note_event = self._note_scheduler.get_note(note_index)
-            lane_value = int(note_event.lane) if note_event is not None else 0
-            note_time_seconds = float(note_event.time_seconds) if note_event is not None else None
+            lane = int(missed_note.note_event.lane)
+            self._note_scheduler.advance_lane_index(lane)
 
-            self._apply_miss()
-            emitted_event = JudgementEvent(
+            self._score_state.apply_judgement("miss")
+
+            miss_event = JudgementEvent(
                 time_seconds=float(song_time_seconds),
-                lane=lane_value,
-                judgement=JudgementKind.MISS,
-                delta_seconds=float(song_time_seconds - (note_time_seconds or song_time_seconds)),
-                note_time_seconds=note_time_seconds,
+                lane=lane,
+                note_time_seconds=float(missed_note.note_event.time_seconds),
+                delta_seconds=float(song_time_seconds) - float(missed_note.note_event.time_seconds),
+                judgement="miss",
             )
-            self.judgementEmitted.emit(emitted_event)
+            miss_events.append(miss_event)
+            self._recent_judgements.append(miss_event)
 
-        self._emit_stats()
-
-    def stats(self) -> GameplayStats:
-        return GameplayStats(
-            combo=int(self._combo),
-            max_combo=int(self._max_combo),
-            score=int(self._score),
-            perfect_count=int(self._perfect_count),
-            great_count=int(self._great_count),
-            good_count=int(self._good_count),
-            miss_count=int(self._miss_count),
-            total_notes=int(self._note_scheduler.total_notes()),
-        )
-
-    def _emit_stats(self) -> None:
-        self.statsUpdated.emit(self.stats())
-
-    def _classify_hit(self, abs_delta_seconds: float) -> Optional[JudgementKind]:
-        abs_delta_value = float(abs_delta_seconds)
-
-        if abs_delta_value <= self._config.perfect_window_seconds:
-            return JudgementKind.PERFECT
-        if abs_delta_value <= self._config.great_window_seconds:
-            return JudgementKind.GREAT
-        if abs_delta_value <= self._config.good_window_seconds:
-            return JudgementKind.GOOD
-        if abs_delta_value <= self._config.miss_window_seconds:
-            return JudgementKind.MISS
-        return None
-
-    def _apply_hit(self, judgement_kind: JudgementKind) -> None:
-        self._combo += 1
-        self._max_combo = max(self._max_combo, self._combo)
-
-        if judgement_kind == JudgementKind.PERFECT:
-            self._perfect_count += 1
-            self._score += self._config.perfect_score
-        elif judgement_kind == JudgementKind.GREAT:
-            self._great_count += 1
-            self._score += self._config.great_score
-        elif judgement_kind == JudgementKind.GOOD:
-            self._good_count += 1
-            self._score += self._config.good_score
-
-    def _apply_miss(self) -> None:
-        self._miss_count += 1
-        self._combo = 0
-        self._score += self._config.miss_score
+        return miss_events

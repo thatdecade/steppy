@@ -1,4 +1,4 @@
-"""
+"""\
 config.py
 
 Typed configuration loading and validation for Steppy.
@@ -40,6 +40,11 @@ Example config file (steppy_config.json)
   "attract": {
     "playlist_id": "",
     "mute": true
+  },
+  "theme": {
+    "themes_root_dir": "Themes",
+    "theme_name": "SteppyDefault",
+    "fallback_theme_name": "_fallback"
   }
 }
 """
@@ -94,10 +99,29 @@ class AttractConfig(BaseModel):
     mute: bool = Field(default=True, description="Mute attract playback.")
 
 
+class ThemeConfig(BaseModel):
+    themes_root_dir: str = Field(
+        default="Themes",
+        description=(
+            "Directory containing StepMania-style theme folders (for example: Themes/Simply-Love).")
+    )
+    theme_name: str = Field(default="SteppyDefault", description="Theme folder name to load.")
+    fallback_theme_name: str = Field(
+        default="_fallback",
+        description="Fallback theme folder name used when theme_name is missing or incomplete.",
+    )
+
+    @field_validator("themes_root_dir", "theme_name", "fallback_theme_name")
+    @classmethod
+    def strip_strings(cls, value: str) -> str:
+        return (value or "").strip()
+
+
 class AppConfig(BaseModel):
     youtube: YouTubeConfig = Field(default_factory=YouTubeConfig)
     web_server: WebServerConfig = Field(default_factory=WebServerConfig)
     attract: AttractConfig = Field(default_factory=AttractConfig)
+    theme: ThemeConfig = Field(default_factory=ThemeConfig)
 
 
 def _default_config_candidates() -> List[Path]:
@@ -144,8 +168,7 @@ def _read_json_file_utf8(config_path: Path) -> Dict[str, Any]:
 
 
 def _apply_environment_overrides(config_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Environment overrides are optional. The config file is the primary source of truth.
+    """Apply optional environment variable overrides.
 
     Override variables:
     - STEPPY_YOUTUBE_API_KEY
@@ -158,7 +181,11 @@ def _apply_environment_overrides(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     - STEPPY_WEB_PORT
     - STEPPY_ATTRACT_PLAYLIST_ID
     - STEPPY_ATTRACT_MUTE
+    - STEPPY_THEMES_ROOT_DIR
+    - STEPPY_THEME_NAME
+    - STEPPY_FALLBACK_THEME_NAME
     """
+
     def ensure_nested(config_root: Dict[str, Any], section_name: str) -> Dict[str, Any]:
         section = config_root.get(section_name)
         if isinstance(section, dict):
@@ -172,6 +199,7 @@ def _apply_environment_overrides(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     youtube_section = ensure_nested(updated_config, "youtube")
     web_server_section = ensure_nested(updated_config, "web_server")
     attract_section = ensure_nested(updated_config, "attract")
+    theme_section = ensure_nested(updated_config, "theme")
 
     def override_string(env_name: str, target_dict: Dict[str, Any], key_name: str) -> None:
         value_text = os.environ.get(env_name, "")
@@ -211,6 +239,10 @@ def _apply_environment_overrides(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     override_string("STEPPY_ATTRACT_PLAYLIST_ID", attract_section, "playlist_id")
     override_bool("STEPPY_ATTRACT_MUTE", attract_section, "mute")
 
+    override_string("STEPPY_THEMES_ROOT_DIR", theme_section, "themes_root_dir")
+    override_string("STEPPY_THEME_NAME", theme_section, "theme_name")
+    override_string("STEPPY_FALLBACK_THEME_NAME", theme_section, "fallback_theme_name")
+
     return updated_config
 
 
@@ -239,12 +271,6 @@ def to_redacted_json(config: AppConfig) -> str:
         api_key_value = str(youtube_section.get("api_key") or "")
         youtube_section["api_key"] = "(set)" if api_key_value else "(missing)"
     return json.dumps(config_dict, ensure_ascii=False, indent=2)
-
-import os
-import subprocess
-import sys
-from pathlib import Path
-from typing import Optional
 
 
 def open_config_json_in_editor(config_path: Optional[Path] = None) -> Path:
