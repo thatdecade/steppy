@@ -5,21 +5,19 @@ Single window UI surface for idle, playback, and overlay.
 
 Integration
 - Loads UI from main_window_ui.py generated from main_window_ui.ui
-- Hosts embedded web video player (WebPlayerBridge)
-- Hosts an overlay layer above the player (placeholder for overlay_renderer.py)
-- Hosts an idle overlay above everything (splash image + QR)
-- Provides non-interactive fullscreen kiosk behavior (optional)
+- Hosts embedded web video player
+- Hosts idle overlay (splash and QR card) above everything when idle
+- Provides non-interactive fullscreen kiosk behavior
 
 Public API
 - show_idle(), hide_idle()
-- set_idle_qr(image: QImage)
-- load_video(video_id: str), play(), pause(), seek(seconds: float)
+- set_idle_qr(image)
+- load_video(video_id), play(), pause(), seek(seconds)
 
 Standalone usage
 python -m main_window
 
 No command line arguments are required or used.
-The standalone window starts in idle mode and toggles between idle and playback on a timer for layout testing.
 """
 
 from __future__ import annotations
@@ -44,13 +42,22 @@ from PyQt6.QtWidgets import (
 from main_window_ui import Ui_MainWindow
 from web_player_bridge import WebPlayerBridge
 
+from config import get_config
+import qr_code
 
-_THEME_BACKGROUND = "#050313"
-_THEME_PRIMARY = "#5F42AB"
-_THEME_CYAN = "#ACE4FC"
-_THEME_PINK = "#F48CE4"
-_THEME_MUTED_MAGENTA = "#A4346C"
-_THEME_OFFWHITE = "#F3F0FC"
+
+THEME_BACKGROUND = "#050313"
+THEME_CYAN = "#ACE4FC"
+THEME_PINK = "#F48CE4"
+THEME_MUTED_MAGENTA = "#A4346C"
+THEME_OFFWHITE = "#F3F0FC"
+
+IDLE_CARD_MARGIN_RIGHT_PX = 72
+IDLE_CARD_MARGIN_BOTTOM_PX = 72
+IDLE_DEBUG_MARGIN_LEFT_PX = 24
+IDLE_DEBUG_MARGIN_TOP_PX = 20
+
+IDLE_QR_BOX_SIZE_PX = 260
 
 
 @dataclass(frozen=True)
@@ -60,17 +67,6 @@ class _DemoState:
 
 
 class MainWindow(QMainWindow):
-    """
-    Main kiosk window for Steppy.
-
-    This module owns the visual layering:
-    - Base layer: WebPlayerBridge (YouTube playback)
-    - Overlay layer: placeholder widget for overlay_renderer.py output
-    - Top layer: idle overlay (splash image + QR card)
-
-    The rest of the app should treat this as a narrow surface with simple commands.
-    """
-
     def __init__(self, *, kiosk_mode: bool = False, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
 
@@ -80,7 +76,6 @@ class MainWindow(QMainWindow):
         self._kiosk_mode = bool(kiosk_mode)
         self._apply_kiosk_settings(self._kiosk_mode)
 
-        # Create a host widget with overlay-capable layout and move the splash frame into it.
         self._layers_host = QWidget(self._ui.centralwidget)
         self._layers_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -88,70 +83,74 @@ class MainWindow(QMainWindow):
         layers_layout.setContentsMargins(0, 0, 0, 0)
         layers_layout.setSpacing(0)
 
-        # Remove splash frame from the UI root layout and re-parent into the overlay grid.
-        if hasattr(self._ui, "rootLayout") and self._ui.rootLayout is not None:
-            try:
-                self._ui.rootLayout.removeWidget(self._ui.splashFrame)
-            except Exception:
-                pass
-
         self._ui.splashFrame.setParent(self._layers_host)
 
-        # Base layer: web player.
         self._web_player = WebPlayerBridge(self._layers_host)
         self._web_player.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        # Overlay layer: placeholder for overlay_renderer.py.
         self._overlay_layer = QWidget(self._layers_host)
         self._overlay_layer.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._overlay_layer.setStyleSheet("background: transparent;")
         self._overlay_layer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        # Add in Z-order: player (bottom), overlay (middle), idle (top).
         layers_layout.addWidget(self._web_player, 0, 0)
         layers_layout.addWidget(self._overlay_layer, 0, 0)
         layers_layout.addWidget(self._ui.splashFrame, 0, 0)
 
-        # Put the layers host back into the central layout.
         if hasattr(self._ui, "rootLayout") and self._ui.rootLayout is not None:
             self._ui.rootLayout.addWidget(self._layers_host)
 
-        # Build idle overlay contents (QR card over the splash image).
-        self._qr_label: QLabel
-        self._url_hint_label: QLabel
-        self._status_debug_label: QLabel
-        self._build_idle_overlay()
+        self._idle_qr_card: Optional[QFrame] = None
+        self._idle_qr_label: Optional[QLabel] = None
+        self._idle_url_hint_label: Optional[QLabel] = None
+        self._idle_debug_label: Optional[QLabel] = None
 
-        # Default: show idle.
+        self._build_idle_overlay_elements()
+
+        # If config load fails, let it raise. You asked for hard failures.
+        app_config, _config_path = get_config()
+
+        control_url, control_qimage = qr_code.generate_control_qr_qimage(
+            app_config,
+            target_size_px=IDLE_QR_BOX_SIZE_PX,
+            fill_color=THEME_BACKGROUND,
+            background_color=THEME_OFFWHITE,
+        )
+        self._set_idle_url_hint(control_url)
+        self.set_idle_qr(control_qimage)
+
         self.show_idle()
-
-    # Public API
+        self._set_debug_text("IDLE  |  space toggles  |  F11 fullscreen  |  Esc quit")
 
     def show_idle(self) -> None:
         self._ui.splashFrame.show()
         self._ui.splashFrame.raise_()
+        self._position_idle_overlays()
 
     def hide_idle(self) -> None:
         self._ui.splashFrame.hide()
 
     def set_idle_qr(self, image: QImage) -> None:
-        if image.isNull():
-            self._qr_label.clear()
-            self._qr_label.setText("QR unavailable")
+        if self._idle_qr_label is None:
             return
 
-        target_width = max(1, self._qr_label.width())
-        target_height = max(1, self._qr_label.height())
+        if image.isNull():
+            self._idle_qr_label.clear()
+            self._idle_qr_label.setText("QR unavailable")
+            return
+
+        target_width = max(1, self._idle_qr_label.width())
+        target_height = max(1, self._idle_qr_label.height())
 
         pixmap = QPixmap.fromImage(image)
         scaled = pixmap.scaled(
             target_width,
             target_height,
             Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.FastTransformation,
+            Qt.TransformationMode.SmoothTransformation,
         )
-        self._qr_label.setPixmap(scaled)
-        self._qr_label.setText("")
+        self._idle_qr_label.setPixmap(scaled)
+        self._idle_qr_label.setText("")
 
     def load_video(self, video_id: str) -> None:
         self._web_player.load_video(video_id, start_seconds=0.0, autoplay=True)
@@ -165,8 +164,6 @@ class MainWindow(QMainWindow):
     def seek(self, seconds: float) -> None:
         self._web_player.seek(float(seconds))
 
-    # Internals
-
     def _apply_kiosk_settings(self, enabled: bool) -> None:
         if enabled:
             self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
@@ -178,100 +175,151 @@ class MainWindow(QMainWindow):
             self.unsetCursor()
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-    def _build_idle_overlay(self) -> None:
-        """
-        Replaces the splash frame layout so we can overlay a QR "card" on top of the splash image.
-        """
+    def _build_idle_overlay_elements(self) -> None:
         splash_frame = self._ui.splashFrame
-        splash_image = self._ui.splashImageLabel
+        splash_image_label = self._ui.splashImageLabel
 
-        old_layout = splash_frame.layout()
-        if old_layout is not None:
-            while old_layout.count():
-                item = old_layout.takeAt(0)
+        existing_layout = splash_frame.layout()
+        if existing_layout is None:
+            splash_layout = QVBoxLayout(splash_frame)
+            splash_layout.setContentsMargins(0, 0, 0, 0)
+            splash_layout.setSpacing(0)
+            splash_layout.addWidget(splash_image_label)
+        else:
+            while existing_layout.count():
+                item = existing_layout.takeAt(0)
                 widget = item.widget()
-                if widget is not None:
+                if widget is not None and widget is not splash_image_label:
                     widget.setParent(None)
-            old_layout.deleteLater()
+            existing_layout.setContentsMargins(0, 0, 0, 0)
+            existing_layout.setSpacing(0)
+            if splash_image_label.parent() is not splash_frame:
+                splash_image_label.setParent(splash_frame)
+            if existing_layout.count() == 0:
+                existing_layout.addWidget(splash_image_label)
 
-        grid = QGridLayout(splash_frame)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(0)
+        splash_image_label.setScaledContents(True)
+        splash_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        splash_image.setParent(splash_frame)
-        splash_image.setScaledContents(True)
-        splash_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        grid.addWidget(splash_image, 0, 0)
-
-        # QR card anchored bottom-right.
-        card = QFrame(splash_frame)
-        card.setObjectName("qrCard")
-        card.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        card.setStyleSheet(
-            "QFrame#qrCard {"
-            f"  background-color: {_THEME_OFFWHITE};"
-            "  border-radius: 14px;"
+        qr_card = QFrame(splash_frame)
+        qr_card.setObjectName("idleQrCard")
+        qr_card.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        qr_card.setStyleSheet(
+            "QFrame#idleQrCard {"
+            "  background: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
+            "    stop:0 rgba(5, 3, 19, 235),"
+            "    stop:1 rgba(95, 66, 171, 80)"
+            "  );"
+            "  border: 2px solid rgba(172, 228, 252, 150);"
+            "  border-radius: 18px;"
             "}"
         )
 
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(18, 18, 18, 18)
-        card_layout.setSpacing(10)
+        qr_card_layout = QVBoxLayout(qr_card)
+        qr_card_layout.setContentsMargins(18, 18, 18, 16)
+        qr_card_layout.setSpacing(10)
 
-        title = QLabel("Scan to control", card)
-        title.setStyleSheet(f"color: {_THEME_PRIMARY}; font-size: 18px; font-weight: 700;")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label = QLabel("Scan to control", qr_card)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label.setStyleSheet(f"color: {THEME_CYAN}; font-size: 18px; font-weight: 700;")
 
-        self._qr_label = QLabel(card)
-        self._qr_label.setFixedSize(300, 300)
-        self._qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._qr_label.setStyleSheet(
-            "background: white; border: 1px solid rgba(0,0,0,0.12); border-radius: 10px;"
+        subtitle_label = QLabel("Local network only", qr_card)
+        subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle_label.setStyleSheet(f"color: {THEME_PINK}; font-size: 12px; font-weight: 600;")
+
+        qr_label = QLabel(qr_card)
+        qr_label.setFixedSize(IDLE_QR_BOX_SIZE_PX, IDLE_QR_BOX_SIZE_PX)
+        qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        qr_label.setStyleSheet(
+            f"background: {THEME_OFFWHITE};"
+            f"color: {THEME_BACKGROUND};"
+            "border: 2px solid rgba(244, 140, 228, 160);"
+            "border-radius: 12px;"
         )
-        self._qr_label.setText("QR pending")
+        qr_label.setText("QR pending")
 
-        self._url_hint_label = QLabel("http://<host>:<port>/", card)
-        self._url_hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._url_hint_label.setStyleSheet("color: #050313; font-size: 12px;")
+        url_hint_label = QLabel("http://<host>:<port>/", qr_card)
+        url_hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        url_hint_label.setStyleSheet(f"color: {THEME_OFFWHITE}; font-size: 12px;")
 
-        accent = QLabel("Steppy", card)
-        accent.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        accent.setStyleSheet(f"color: {_THEME_MUTED_MAGENTA}; font-size: 12px; font-weight: 600;")
+        footer_label = QLabel("Steppy", qr_card)
+        footer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        footer_label.setStyleSheet(f"color: {THEME_MUTED_MAGENTA}; font-size: 12px; font-weight: 700;")
 
-        card_layout.addWidget(title)
-        card_layout.addWidget(self._qr_label, 0, Qt.AlignmentFlag.AlignCenter)
-        card_layout.addWidget(self._url_hint_label)
-        card_layout.addWidget(accent)
+        qr_card_layout.addWidget(title_label)
+        qr_card_layout.addWidget(subtitle_label)
+        qr_card_layout.addWidget(qr_label, 0, Qt.AlignmentFlag.AlignCenter)
+        qr_card_layout.addWidget(url_hint_label)
+        qr_card_layout.addWidget(footer_label)
 
-        # Place card in bottom-right with margins.
-        card_container = QWidget(splash_frame)
-        card_container.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        container_layout = QVBoxLayout(card_container)
-        container_layout.setContentsMargins(0, 0, 0, 0)
-        container_layout.addWidget(card, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+        qr_card.adjustSize()
 
-        container_layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
-        grid.addWidget(card_container, 0, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
-        grid.setContentsMargins(40, 40, 40, 40)
-
-        # Small debug/status label top-left (useful during demo mode).
-        self._status_debug_label = QLabel("", splash_frame)
-        self._status_debug_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self._status_debug_label.setStyleSheet(
-            "background: rgba(5,3,19,0.55);"
-            f"color: {_THEME_CYAN};"
+        debug_label = QLabel("", splash_frame)
+        debug_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        debug_label.setStyleSheet(
+            "background: rgba(5, 3, 19, 160);"
+            f"color: {THEME_CYAN};"
             "padding: 6px 10px;"
-            "border-radius: 8px;"
+            "border: 1px solid rgba(172, 228, 252, 80);"
+            "border-radius: 10px;"
             "font-size: 12px;"
         )
-        self._status_debug_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        grid.addWidget(self._status_debug_label, 0, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        debug_label.adjustSize()
 
-    # Debug helpers (not part of the app-facing API)
+        self._idle_qr_card = qr_card
+        self._idle_qr_label = qr_label
+        self._idle_url_hint_label = url_hint_label
+        self._idle_debug_label = debug_label
+
+        self._position_idle_overlays()
+
+    def _set_idle_url_hint(self, url_text: str) -> None:
+        if self._idle_url_hint_label is None:
+            return
+        self._idle_url_hint_label.setText(url_text)
+        self._idle_url_hint_label.adjustSize()
+        self._position_idle_overlays()
+
+    def _position_idle_overlays(self) -> None:
+        if self._idle_qr_card is None:
+            return
+
+        splash_frame = self._ui.splashFrame
+        frame_width = max(1, splash_frame.width())
+        frame_height = max(1, splash_frame.height())
+
+        qr_card = self._idle_qr_card
+        qr_card_size = qr_card.sizeHint()
+        qr_card_width = max(1, qr_card_size.width())
+        qr_card_height = max(1, qr_card_size.height())
+
+        target_x = frame_width - qr_card_width - IDLE_CARD_MARGIN_RIGHT_PX
+        target_y = frame_height - qr_card_height - IDLE_CARD_MARGIN_BOTTOM_PX
+
+        target_x = max(0, target_x)
+        target_y = max(0, target_y)
+
+        qr_card.setGeometry(target_x, target_y, qr_card_width, qr_card_height)
+        qr_card.raise_()
+
+        if self._idle_debug_label is not None:
+            debug_label = self._idle_debug_label
+            debug_size = debug_label.sizeHint()
+            debug_width = max(1, debug_size.width())
+            debug_height = max(1, debug_size.height())
+            debug_label.setGeometry(IDLE_DEBUG_MARGIN_LEFT_PX, IDLE_DEBUG_MARGIN_TOP_PX, debug_width, debug_height)
+            debug_label.raise_()
 
     def _set_debug_text(self, text: str) -> None:
-        if self._status_debug_label is not None:
-            self._status_debug_label.setText(text)
+        if self._idle_debug_label is None:
+            return
+        self._idle_debug_label.setText(text)
+        self._idle_debug_label.adjustSize()
+        self._position_idle_overlays()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_idle_overlays()
 
     def keyPressEvent(self, event: Optional[QKeyEvent]) -> None:
         if event is None:
@@ -284,8 +332,10 @@ class MainWindow(QMainWindow):
         if event.key() == Qt.Key.Key_Space:
             if self._ui.splashFrame.isVisible():
                 self.hide_idle()
+                self._set_debug_text("PLAYING (demo layout only)")
             else:
                 self.show_idle()
+                self._set_debug_text("IDLE  |  space toggles  |  F11 fullscreen  |  Esc quit")
             return
 
         if event.key() == Qt.Key.Key_F11:
@@ -306,43 +356,19 @@ def main() -> int:
     window.resize(1536, 1024)
     window.show()
 
-    # Demo mode: toggle idle/playback on a timer, with a fake clock display.
     demo_state = _DemoState(is_idle=True, fake_time_seconds=0.0)
 
-    demo_tick_timer = QTimer(window)
-    demo_tick_timer.setInterval(100)
+    tick_timer = QTimer(window)
+    tick_timer.setInterval(100)
 
     def on_tick() -> None:
         nonlocal demo_state
         if demo_state.is_idle:
-            window._set_debug_text("IDLE  |  space toggles  |  F11 fullscreen  |  Esc quit")
             return
-
         demo_state = _DemoState(is_idle=False, fake_time_seconds=demo_state.fake_time_seconds + 0.1)
-        window._set_debug_text(f"PLAYING (demo)  |  t={demo_state.fake_time_seconds:0.1f}s")
 
-    demo_tick_timer.timeout.connect(on_tick)
-    demo_tick_timer.start()
-
-    toggle_timer = QTimer(window)
-    toggle_timer.setInterval(5000)
-
-    def on_toggle() -> None:
-        nonlocal demo_state
-        if demo_state.is_idle:
-            demo_state = _DemoState(is_idle=False, fake_time_seconds=0.0)
-            window.hide_idle()
-            # Optional: load a known video for layout testing.
-            # If you do not want network activity during this demo, comment out this line.
-            window.load_video("dQw4w9WgXcQ")
-            window.play()
-        else:
-            demo_state = _DemoState(is_idle=True, fake_time_seconds=0.0)
-            window.pause()
-            window.show_idle()
-
-    toggle_timer.timeout.connect(on_toggle)
-    toggle_timer.start()
+    tick_timer.timeout.connect(on_tick)
+    tick_timer.start()
 
     return application.exec()
 
