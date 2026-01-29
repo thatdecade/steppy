@@ -48,6 +48,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -237,6 +239,34 @@ def to_redacted_json(config: AppConfig) -> str:
         api_key_value = str(youtube_section.get("api_key") or "")
         youtube_section["api_key"] = "(set)" if api_key_value else "(missing)"
     return json.dumps(config_dict, ensure_ascii=False, indent=2)
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional
+
+
+def open_config_json_in_editor(config_path: Optional[Path] = None) -> Path:
+    if config_path is None:
+        _config, resolved_path = get_config()
+    else:
+        resolved_path = Path(config_path)
+
+    resolved_path = resolved_path.expanduser().resolve()
+    resolved_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not resolved_path.exists():
+        resolved_path.write_text("{}", encoding="utf-8")
+
+    if sys.platform.startswith("win"):
+        os.startfile(str(resolved_path))
+    elif sys.platform == "darwin":
+        subprocess.run(["open", str(resolved_path)], check=False)
+    else:
+        subprocess.run(["xdg-open", str(resolved_path)], check=False)
+
+    return resolved_path
 
 
 def main() -> int:

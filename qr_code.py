@@ -208,6 +208,16 @@ def generate_qr_qimage(
     svg_bytes = Path(svg_path).read_bytes()
     return _render_svg_bytes_to_qimage(svg_bytes, int(max(32, target_size_px)))
 
+  
+
+def load_qimage_from_png(png_path: Path) -> QImage:
+    """
+    Convenience helper for Qt modules. Loads a QImage from a PNG on disk.
+    """
+    image = QImage(str(png_path))
+    if image.isNull():
+        raise ValueError("Failed to load QImage from PNG: " + str(png_path))
+    return image
 
 def generate_control_qr_qimage(
     app_config: AppConfig,

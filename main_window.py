@@ -42,7 +42,8 @@ from PyQt6.QtWidgets import (
 from main_window_ui import Ui_MainWindow
 from web_player_bridge import WebPlayerBridge
 
-from config import get_config
+from config import get_config, open_config_json_in_editor
+
 import qr_code
 
 
@@ -70,20 +71,20 @@ class MainWindow(QMainWindow):
     def __init__(self, *, kiosk_mode: bool = False, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
 
-        self._ui = Ui_MainWindow()
-        self._ui.setupUi(self)
+        self.ui = Ui_MainWindow()
+        self.ui.setupUi(self)
 
         self._kiosk_mode = bool(kiosk_mode)
         self._apply_kiosk_settings(self._kiosk_mode)
 
-        self._layers_host = QWidget(self._ui.centralwidget)
+        self._layers_host = QWidget(self.ui.centralwidget)
         self._layers_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         layers_layout = QGridLayout(self._layers_host)
         layers_layout.setContentsMargins(0, 0, 0, 0)
         layers_layout.setSpacing(0)
 
-        self._ui.splashFrame.setParent(self._layers_host)
+        self.ui.splashFrame.setParent(self._layers_host)
 
         self._web_player = WebPlayerBridge(self._layers_host)
         self._web_player.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -95,17 +96,21 @@ class MainWindow(QMainWindow):
 
         layers_layout.addWidget(self._web_player, 0, 0)
         layers_layout.addWidget(self._overlay_layer, 0, 0)
-        layers_layout.addWidget(self._ui.splashFrame, 0, 0)
+        layers_layout.addWidget(self.ui.splashFrame, 0, 0)
 
-        if hasattr(self._ui, "rootLayout") and self._ui.rootLayout is not None:
-            self._ui.rootLayout.addWidget(self._layers_host)
+        if hasattr(self.ui, "rootLayout") and self.ui.rootLayout is not None:
+            self.ui.rootLayout.addWidget(self._layers_host)
 
         self._idle_qr_card: Optional[QFrame] = None
         self._idle_qr_label: Optional[QLabel] = None
         self._idle_url_hint_label: Optional[QLabel] = None
-        self._idle_debug_label: Optional[QLabel] = None
+        self._status_label: Optional[QLabel] = None
 
         self._build_idle_overlay_elements()
+        
+        self.ui.actionPreferences.triggered.connect(self.on_action_preferences)
+        self.ui.actionFull_Screen.triggered.connect(self.on_action_fullscreen_toggle)
+        self.ui.actionExit       .triggered.connect(self.on_action_exit)
 
         # If config load fails, let it raise. You asked for hard failures.
         app_config, _config_path = get_config()
@@ -120,15 +125,30 @@ class MainWindow(QMainWindow):
         self.set_idle_qr(control_qimage)
 
         self.show_idle()
-        self._set_debug_text("IDLE  |  space toggles  |  F11 fullscreen  |  Esc quit")
+        self._set_status_text("IDLE  |  F11 fullscreen  |  press space to test ")
+        
+    def on_action_fullscreen_toggle(self):
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
+        return
+
+    def on_action_preferences(self) -> None:
+        config_path = get_config()[1]
+        opened_path = open_config_json_in_editor(config_path)
+        self._set_status_text("Opened config: " + str(opened_path))
+
+    def on_action_exit(self) -> None:
+        self.close()
 
     def show_idle(self) -> None:
-        self._ui.splashFrame.show()
-        self._ui.splashFrame.raise_()
+        self.ui.splashFrame.show()
+        self.ui.splashFrame.raise_()
         self._position_idle_overlays()
 
     def hide_idle(self) -> None:
-        self._ui.splashFrame.hide()
+        self.ui.splashFrame.hide()
 
     def set_idle_qr(self, image: QImage) -> None:
         if self._idle_qr_label is None:
@@ -176,8 +196,8 @@ class MainWindow(QMainWindow):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def _build_idle_overlay_elements(self) -> None:
-        splash_frame = self._ui.splashFrame
-        splash_image_label = self._ui.splashImageLabel
+        splash_frame = self.ui.splashFrame
+        splash_image_label = self.ui.splashImageLabel
 
         existing_layout = splash_frame.layout()
         if existing_layout is None:
@@ -269,7 +289,7 @@ class MainWindow(QMainWindow):
         self._idle_qr_card = qr_card
         self._idle_qr_label = qr_label
         self._idle_url_hint_label = url_hint_label
-        self._idle_debug_label = debug_label
+        self._status_label = debug_label
 
         self._position_idle_overlays()
 
@@ -284,7 +304,7 @@ class MainWindow(QMainWindow):
         if self._idle_qr_card is None:
             return
 
-        splash_frame = self._ui.splashFrame
+        splash_frame = self.ui.splashFrame
         frame_width = max(1, splash_frame.width())
         frame_height = max(1, splash_frame.height())
 
@@ -302,19 +322,19 @@ class MainWindow(QMainWindow):
         qr_card.setGeometry(target_x, target_y, qr_card_width, qr_card_height)
         qr_card.raise_()
 
-        if self._idle_debug_label is not None:
-            debug_label = self._idle_debug_label
+        if self._status_label is not None:
+            debug_label = self._status_label
             debug_size = debug_label.sizeHint()
             debug_width = max(1, debug_size.width())
             debug_height = max(1, debug_size.height())
             debug_label.setGeometry(IDLE_DEBUG_MARGIN_LEFT_PX, IDLE_DEBUG_MARGIN_TOP_PX, debug_width, debug_height)
             debug_label.raise_()
-
-    def _set_debug_text(self, text: str) -> None:
-        if self._idle_debug_label is None:
+            
+    def _set_status_text(self, text: str) -> None:
+        if self._status_label is None:
             return
-        self._idle_debug_label.setText(text)
-        self._idle_debug_label.adjustSize()
+        self._status_label.setText(text)
+        self._status_label.adjustSize()
         self._position_idle_overlays()
 
     def resizeEvent(self, event) -> None:
@@ -325,28 +345,24 @@ class MainWindow(QMainWindow):
         if event is None:
             return
 
-        if event.key() == Qt.Key.Key_Escape:
-            self.close()
-            return
-
         if event.key() == Qt.Key.Key_Space:
-            if self._ui.splashFrame.isVisible():
+            if self.ui.splashFrame.isVisible():
                 self.hide_idle()
-                self._set_debug_text("PLAYING (demo layout only)")
+                self._set_status_text("PLAYING (demo layout only)")
             else:
                 self.show_idle()
-                self._set_debug_text("IDLE  |  space toggles  |  F11 fullscreen  |  Esc quit")
+                self._set_status_text("IDLE  |  space toggles  |  F11 fullscreen  |  Esc quit")
+            return
+          
+        if event.key() == Qt.Key.Key_Escape:
+            if self.isFullScreen():
+                self.showNormal()
             return
 
         if event.key() == Qt.Key.Key_F11:
-            if self.isFullScreen():
-                self.showNormal()
-            else:
-                self.showFullScreen()
-            return
+            self.on_action_fullscreen_toggle()
 
         super().keyPressEvent(event)
-
 
 def main() -> int:
     application_arguments = sys.argv if sys.argv and sys.argv[0] else ["steppy"]
