@@ -9,8 +9,6 @@ Responsibilities:
 - Provide player time polling (player_time_seconds) and state events
 - Use QWebChannel for JavaScript -> Python callbacks
 
-Standalone usage:
-python -m web_player_bridge
 """
 
 from __future__ import annotations

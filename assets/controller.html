@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en" data-steppy-page="controller">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Steppy controller">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+
+  <meta name="theme-color" content="#0134d4">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+
+  <title>Steppy Controller</title>
+
+  <link rel="icon" href="assets/img/core-img/favicon.ico">
+  <link rel="apple-touch-icon" href="assets/img/icons/icon-96x96.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="assets/img/icons/icon-152x152.png">
+  <link rel="apple-touch-icon" sizes="167x167" href="assets/img/icons/icon-167x167.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="assets/img/icons/icon-180x180.png">
+
+  <link rel="stylesheet" href="style.css">
+  <link rel="manifest" href="manifest.json">
+</head>
+
+<body>
+
+  <!-- Preloader -->
+  <div id="preloader">
+    <div class="spinner-grow text-primary" role="status">
+      <span class="visually-hidden">Loading...</span>
+    </div>
+  </div>
+
+  <!-- Header Area -->
+  <div class="header-area" id="headerArea">
+    <div class="container">
+      <div class="header-content header-style-four position-relative d-flex align-items-center justify-content-between">
+        <div class="back-button">
+          <a href="index.html" aria-label="Back to home">
+            <i class="ti ti-arrow-left"></i>
+          </a>
+        </div>
+
+        <div class="page-heading">
+          <h6 class="mb-0">Controller</h6>
+        </div>
+
+        <div class="user-profile-wrapper">
+          <a class="user-profile-trigger-btn" href="search.html" aria-label="Search">
+            <i class="ti ti-search"></i>
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="page-content-wrapper py-3">
+    <div class="container">
+
+      <div class="alert alert-warning d-flex align-items-center mb-3" role="alert">
+        <i class="ti ti-wifi-off me-2"></i>
+        <div>
+          <span class="fw-semibold">Backend:</span>
+          <span id="steppy-backend-status">checking</span>
+        </div>
+      </div>
+
+      <div class="card mb-3">
+        <div class="card-body">
+          <div class="d-flex align-items-start justify-content-between">
+            <div>
+              <h6 class="mb-1" id="steppy-song-title">No song selected</h6>
+              <p class="mb-2 small text-muted" id="steppy-song-meta">Select a song from Search</p>
+            </div>
+            <span class="badge bg-secondary" id="steppy-state-badge">IDLE</span>
+          </div>
+
+          <div class="row g-2">
+            <div class="col-6">
+              <div class="border rounded p-2">
+                <div class="small text-muted">Elapsed</div>
+                <div class="fw-semibold" id="steppy-elapsed">0:00</div>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="border rounded p-2">
+                <div class="small text-muted">Difficulty</div>
+                <div class="fw-semibold" id="steppy-difficulty">easy</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <div class="card mb-3">
+        <div class="card-body">
+          <h6 class="mb-3">Controls</h6>
+
+          <div class="row g-2">
+            <div class="col-6">
+              <button class="btn btn-primary w-100" type="button" data-steppy-command="pause">
+                Pause <i class="ti ti-player-pause ms-1"></i>
+              </button>
+            </div>
+            <div class="col-6">
+              <button class="btn btn-success w-100" type="button" data-steppy-command="resume">
+                Resume <i class="ti ti-player-play ms-1"></i>
+              </button>
+            </div>
+            <div class="col-6">
+              <button class="btn btn-warning w-100" type="button" data-steppy-command="restart">
+                Restart <i class="ti ti-refresh ms-1"></i>
+              </button>
+            </div>
+            <div class="col-6">
+              <button class="btn btn-danger w-100" type="button" data-steppy-command="stop">
+                Stop <i class="ti ti-x ms-1"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="mt-3">
+            <a class="btn btn-outline-primary w-100" href="search.html">
+              Pick a song <i class="ti ti-search ms-1"></i>
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mb-3">
+        <div class="card-body">
+          <h6 class="mb-3">Difficulty</h6>
+
+          <div class="btn-group w-100" role="group" aria-label="Difficulty selection">
+            <button class="btn btn-outline-secondary" type="button" data-steppy-difficulty="easy">Easy</button>
+            <button class="btn btn-outline-secondary" type="button" data-steppy-difficulty="medium">Medium</button>
+            <button class="btn btn-outline-secondary" type="button" data-steppy-difficulty="hard">Hard</button>
+          </div>
+
+          <p class="small text-muted mt-2 mb-0">
+            Difficulty changes are applied for the next play, or while paused once backend is wired.
+          </p>
+        </div>
+      </div>
+
+      <div class="pb-3"></div>
+    </div>
+  </div>
+
+  <!-- Footer Nav -->
+  <div class="footer-nav-area" id="footerNav">
+    <div class="container px-0">
+      <div class="footer-nav position-relative">
+        <ul class="h-100 d-flex align-items-center justify-content-between ps-0">
+          <li>
+            <a href="index.html">
+              <i class="ti ti-home"></i>
+              <span>Home</span>
+            </a>
+          </li>
+
+          <li class="active">
+            <a href="controller.html">
+              <i class="ti ti-player-play"></i>
+              <span>Controller</span>
+            </a>
+          </li>
+
+          <li>
+            <a href="search.html">
+              <i class="ti ti-search"></i>
+              <span>Search</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast-container position-fixed bottom-0 start-50 translate-middle-x p-3" style="z-index: 1080;">
+    <div id="steppy-toast" class="toast align-items-center text-bg-primary border-0" role="alert" aria-live="assertive"
+      aria-atomic="true">
+      <div class="d-flex">
+        <div class="toast-body" id="steppy-toast-body">Ready</div>
+        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"
+          aria-label="Close"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- JavaScript -->
+  <script src="assets/js/bootstrap.bundle.min.js" defer></script>
+  <script src="assets/js/slideToggle.min.js" defer></script>
+  <script src="assets/js/internet-status.js" defer></script>
+  <script src="assets/js/dark-rtl.js" defer></script>
+  <script src="assets/js/active.js" defer></script>
+  <script src="steppy.js" defer></script>
+</body>
+
+</html>

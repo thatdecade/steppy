@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en" data-steppy-page="search">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Steppy search">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+
+  <meta name="theme-color" content="#0134d4">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+
+  <title>Steppy Search</title>
+
+  <link rel="icon" href="assets/img/core-img/favicon.ico">
+  <link rel="apple-touch-icon" href="assets/img/icons/icon-96x96.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="assets/img/icons/icon-152x152.png">
+  <link rel="apple-touch-icon" sizes="167x167" href="assets/img/icons/icon-167x167.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="assets/img/icons/icon-180x180.png">
+
+  <link rel="stylesheet" href="style.css">
+  <link rel="manifest" href="manifest.json">
+</head>
+
+<body>
+
+  <!-- Preloader -->
+  <div id="preloader">
+    <div class="spinner-grow text-primary" role="status">
+      <span class="visually-hidden">Loading...</span>
+    </div>
+  </div>
+
+  <!-- Header Area -->
+  <div class="header-area" id="headerArea">
+    <div class="container">
+      <div class="header-content header-style-four position-relative d-flex align-items-center justify-content-between">
+        <div class="back-button">
+          <a href="controller.html" aria-label="Back to controller">
+            <i class="ti ti-arrow-left"></i>
+          </a>
+        </div>
+
+        <div class="page-heading">
+          <h6 class="mb-0">Search</h6>
+        </div>
+
+        <div class="user-profile-wrapper">
+          <a class="user-profile-trigger-btn" href="controller.html" aria-label="Controller">
+            <i class="ti ti-player-play"></i>
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="page-content-wrapper py-3">
+    <div class="container">
+
+      <div class="card mb-3">
+        <div class="card-body p-2">
+          <form id="steppy-search-form" action="#" autocomplete="off">
+            <div class="input-group">
+              <span class="input-group-text" id="steppy-search-icon">
+                <i class="ti ti-search"></i>
+              </span>
+              <input class="form-control" id="steppy-search-input" type="search" placeholder="Search YouTube"
+                aria-describedby="steppy-search-icon" />
+              <button class="btn btn-primary" type="submit">Go</button>
+            </div>
+          </form>
+          <p class="small text-muted mt-2 mb-0" id="steppy-search-hint">
+            Phase 1 uses demo results. Backend search will replace this later.
+          </p>
+        </div>
+      </div>
+
+      <div id="steppy-search-results" class="top-products-area product-list-wrap">
+        <div class="container px-0">
+          <div class="row g-3" id="steppy-results-grid"></div>
+        </div>
+      </div>
+
+      <div class="pb-3"></div>
+    </div>
+  </div>
+
+  <!-- Footer Nav -->
+  <div class="footer-nav-area" id="footerNav">
+    <div class="container px-0">
+      <div class="footer-nav position-relative">
+        <ul class="h-100 d-flex align-items-center justify-content-between ps-0">
+          <li>
+            <a href="index.html">
+              <i class="ti ti-home"></i>
+              <span>Home</span>
+            </a>
+          </li>
+
+          <li>
+            <a href="controller.html">
+              <i class="ti ti-player-play"></i>
+              <span>Controller</span>
+            </a>
+          </li>
+
+          <li class="active">
+            <a href="search.html">
+              <i class="ti ti-search"></i>
+              <span>Search</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast-container position-fixed bottom-0 start-50 translate-middle-x p-3" style="z-index: 1080;">
+    <div id="steppy-toast" class="toast align-items-center text-bg-primary border-0" role="alert" aria-live="assertive"
+      aria-atomic="true">
+      <div class="d-flex">
+        <div class="toast-body" id="steppy-toast-body">Ready</div>
+        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"
+          aria-label="Close"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- JavaScript -->
+  <script src="assets/js/bootstrap.bundle.min.js" defer></script>
+  <script src="assets/js/slideToggle.min.js" defer></script>
+  <script src="assets/js/internet-status.js" defer></script>
+  <script src="assets/js/dark-rtl.js" defer></script>
+  <script src="assets/js/active.js" defer></script>
+  <script src="steppy.js" defer></script>
+</body>
+
+</html>

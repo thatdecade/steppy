@@ -22,8 +22,11 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="config.py" />
     <Compile Include="steppy.py" />
     <Compile Include="web_player_bridge.py" />
+    <Compile Include="web_server.py" />
+    <Compile Include="youtube_api.py" />
   </ItemGroup>
   <ItemGroup>
     <Interpreter Include="env\">
@@ -35,6 +38,9 @@
       <PathEnvironmentVariable>PYTHONPATH</PathEnvironmentVariable>
       <Architecture>X64</Architecture>
     </Interpreter>
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="steppy_config.json" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in
