@@ -4,15 +4,23 @@ main_window.py
 Single window UI surface for idle, playback, and overlay.
 
 Integration
-- Loads UI from main_window_ui.py generated from main_window_ui.ui
-- Hosts embedded web video player
-- Hosts idle overlay (splash and QR card) above everything when idle
-- Provides non-interactive fullscreen kiosk behavior
+
+* Loads UI from main_window_ui.py generated from main_window_ui.ui
+* Hosts embedded web video player
+* Hosts idle overlay (splash and QR card) above everything when idle
+* Provides non-interactive fullscreen kiosk behavior
+
+TODO (pending integration with other modules)
+
+* Wire overlay renderer into the dedicated overlay layer (currently an empty transparent widget).
+* Make kiosk mode truly non-interactive and locked down (disable menu/actions, suppress escape keys, and handle platform exit routes as needed).
+* Fix standalone demo playback clock so it actually toggles out of idle and drives visible layout testing output.
 
 Public API
-- show_idle(), hide_idle()
-- set_idle_qr(image)
-- load_video(video_id), play(), pause(), seek(seconds)
+
+* show_idle(), hide_idle()
+* set_idle_qr(image)
+* load_video(video_id), play(), pause(), seek(seconds)
 
 Standalone usage
 python -m main_window
