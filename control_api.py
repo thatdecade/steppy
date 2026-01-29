@@ -1,33 +1,33 @@
 """
 control_api.py
 
-Python client for the Steppy local control HTTP API.
+Qt-first control integration for Steppy.
 
 Purpose
-- Provide a small wrapper around the Flask endpoints exposed by web_server.py.
-- Allow steppy.py to poll /api/status and translate state into MainWindow actions.
+- Own the embedded Flask web server (web_server.py) inside the Qt process.
+- Provide a Qt QObject that emits signals derived from control state.
+- Avoid HTTP self-polling so the local Flask access log stays quiet when no browser is connected.
 
-Notes
-- This is a client only module. The server endpoints live in web_server.py.
-- This module avoids third party HTTP dependencies.
+How it works
+- Starts the Flask development server in a daemon thread so phones or tablets can control Steppy.
+- Polls /api/status using Flask's in-process test client (no TCP, no access log noise).
+- Diffs the status snapshots and emits signals for the parts that changed.
 
 Public API
-- ControlApiClient
 - ControlStatus
+- ControlApiBridge
 """
 
 from __future__ import annotations
 
-import json
-import socket
-import urllib.error
-import urllib.request
+import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Optional
 
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
-class ControlApiError(RuntimeError):
-    pass
+import web_server
 
 
 @dataclass(frozen=True)
@@ -47,23 +47,7 @@ class ControlStatus:
     def from_dict(cls, payload: Dict[str, Any]) -> "ControlStatus":
         ok_value = bool(payload.get("ok", False))
         error_text = str(payload.get("error") or "").strip() or None
-
         state_value = str(payload.get("state") or "").strip() or "UNKNOWN"
-        video_id_value = payload.get("video_id")
-        video_title_value = payload.get("video_title")
-        channel_title_value = payload.get("channel_title")
-        thumbnail_url_value = payload.get("thumbnail_url")
-        duration_seconds_value = payload.get("duration_seconds")
-        elapsed_seconds_value = payload.get("elapsed_seconds")
-        difficulty_value = payload.get("difficulty")
-
-        duration_seconds_parsed: Optional[int] = None
-        if isinstance(duration_seconds_value, int):
-            duration_seconds_parsed = max(0, int(duration_seconds_value))
-
-        elapsed_seconds_parsed: Optional[float] = None
-        if isinstance(elapsed_seconds_value, (int, float)):
-            elapsed_seconds_parsed = float(max(0.0, float(elapsed_seconds_value)))
 
         def normalize_optional_text(value: Any) -> Optional[str]:
             if not isinstance(value, str):
@@ -71,45 +55,176 @@ class ControlStatus:
             trimmed = value.strip()
             return trimmed or None
 
+        video_id_value = normalize_optional_text(payload.get("video_id"))
+        video_title_value = normalize_optional_text(payload.get("video_title"))
+        channel_title_value = normalize_optional_text(payload.get("channel_title"))
+        thumbnail_url_value = normalize_optional_text(payload.get("thumbnail_url"))
+        difficulty_value = normalize_optional_text(payload.get("difficulty"))
+
+        duration_seconds_value = payload.get("duration_seconds")
+        duration_seconds_parsed: Optional[int] = None
+        if isinstance(duration_seconds_value, int):
+            duration_seconds_parsed = max(0, int(duration_seconds_value))
+
+        elapsed_seconds_value = payload.get("elapsed_seconds")
+        elapsed_seconds_parsed: Optional[float] = None
+        if isinstance(elapsed_seconds_value, (int, float)):
+            elapsed_seconds_parsed = float(max(0.0, float(elapsed_seconds_value)))
+
         return cls(
             ok=ok_value,
             state=state_value,
-            video_id=normalize_optional_text(video_id_value),
-            video_title=normalize_optional_text(video_title_value),
-            channel_title=normalize_optional_text(channel_title_value),
-            thumbnail_url=normalize_optional_text(thumbnail_url_value),
+            video_id=video_id_value,
+            video_title=video_title_value,
+            channel_title=channel_title_value,
+            thumbnail_url=thumbnail_url_value,
             duration_seconds=duration_seconds_parsed,
             elapsed_seconds=elapsed_seconds_parsed,
-            difficulty=normalize_optional_text(difficulty_value),
+            difficulty=difficulty_value,
             error=error_text,
         )
 
 
-def choose_loopback_host(bind_host: str) -> str:
-    cleaned = (bind_host or "").strip().lower()
-    if cleaned in ("0.0.0.0", "", "localhost", "127.0.0.1"):
-        return "127.0.0.1"
-    if cleaned in ("::", "::0", "[::]"):
-        return "127.0.0.1"
-    return bind_host
+class ControlApiBridge(QObject):
+    """Qt bridge that owns the web server and emits signals based on control state.
 
+    Signals are emitted on the Qt thread. The Flask server runs in a background thread.
+    """
 
-class ControlApiClient:
-    def __init__(self, *, host: str, port: int, timeout_seconds: float = 0.25) -> None:
-        self._host = str(host)
-        self._port = int(port)
-        self._timeout_seconds = float(max(0.05, timeout_seconds))
+    status_updated = pyqtSignal(object)
+    state_changed = pyqtSignal(str)
+    video_changed = pyqtSignal(object)
+    difficulty_changed = pyqtSignal(str)
+    error_changed = pyqtSignal(str)
 
-        base_host = choose_loopback_host(self._host)
-        self._base_url = f"http://{base_host}:{self._port}"
+    def __init__(
+        self,
+        *,
+        bind_host: str,
+        bind_port: int,
+        web_root_dir: Path,
+        debug: bool = False,
+        poll_interval_ms: int = 200,
+        parent: Optional[QObject] = None,
+    ) -> None:
+        super().__init__(parent)
+
+        self._bind_host = str(bind_host)
+        self._bind_port = int(bind_port)
+        self._web_root_dir = Path(web_root_dir)
+        self._debug = bool(debug)
+        self._poll_interval_ms = int(max(50, poll_interval_ms))
+
+        self._flask_application = web_server.create_flask_app(
+            web_server.WebServerConfig(
+                host=self._bind_host,
+                port=self._bind_port,
+                web_root_dir=self._web_root_dir,
+                debug=self._debug,
+            )
+        )
+
+        self._server_thread: Optional[threading.Thread] = None
+
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(self._poll_interval_ms)
+        self._poll_timer.timeout.connect(self._poll_once)
+
+        self._test_client_lock = threading.Lock()
+
+        self._last_status: Optional[ControlStatus] = None
+        self._last_state_value: Optional[str] = None
+        self._last_video_id_value: Optional[str] = None
+        self._last_difficulty_value: Optional[str] = None
+        self._last_error_value: Optional[str] = None
 
     @property
-    def base_url(self) -> str:
-        return self._base_url
+    def flask_application(self):
+        return self._flask_application
 
-    def get_status(self) -> ControlStatus:
-        payload = self._get_json("/api/status")
-        if not isinstance(payload, dict):
+    def start(self) -> None:
+        self.start_server()
+        self.start_polling()
+
+    def start_server(self) -> None:
+        if self._server_thread is not None:
+            return
+
+        def run_server() -> None:
+            self._flask_application.run(
+                host=self._bind_host,
+                port=self._bind_port,
+                debug=self._debug,
+                use_reloader=False,
+                threaded=False,
+            )
+
+        self._server_thread = threading.Thread(
+            target=run_server,
+            name="steppy-web-server",
+            daemon=True,
+        )
+        self._server_thread.start()
+
+    def start_polling(self) -> None:
+        if self._poll_timer.isActive():
+            return
+        self._poll_timer.start()
+        self._poll_once()
+
+    def stop_polling(self) -> None:
+        if self._poll_timer.isActive():
+            self._poll_timer.stop()
+
+    def last_status(self) -> Optional[ControlStatus]:
+        return self._last_status
+
+    def _poll_once(self) -> None:
+        status = self._read_status_in_process()
+        self._last_status = status
+
+        state_value = (status.state or "").strip().upper()
+        video_id_value = status.video_id
+        difficulty_value = status.difficulty
+        error_text = status.error or ""
+
+        video_changed = video_id_value != self._last_video_id_value
+        state_changed = bool(state_value) and state_value != self._last_state_value
+        difficulty_changed = difficulty_value is not None and difficulty_value != self._last_difficulty_value
+        error_changed = error_text != (self._last_error_value or "")
+
+        if video_changed:
+            self._last_video_id_value = video_id_value
+            self.video_changed.emit(status)
+
+        if difficulty_changed and difficulty_value is not None:
+            self._last_difficulty_value = difficulty_value
+            self.difficulty_changed.emit(difficulty_value)
+
+        if state_changed:
+            self._last_state_value = state_value
+            self.state_changed.emit(state_value)
+
+        if error_changed:
+            self._last_error_value = error_text
+            self.error_changed.emit(error_text)
+
+        self.status_updated.emit(status)
+
+    def _read_status_in_process(self) -> ControlStatus:
+        """Call /api/status using Flask's in-process test client.
+
+        This avoids TCP traffic and avoids Werkzeug access log noise.
+        """
+        try:
+            with self._test_client_lock:
+                with self._flask_application.test_client() as test_client:
+                    response = test_client.get("/api/status")
+                    payload = response.get_json(silent=True)
+
+            if isinstance(payload, dict):
+                return ControlStatus.from_dict(payload)
+
             return ControlStatus(
                 ok=False,
                 state="ERROR",
@@ -122,82 +237,16 @@ class ControlApiClient:
                 difficulty=None,
                 error="Invalid status payload",
             )
-        return ControlStatus.from_dict(payload)
-
-    def play(
-        self,
-        *,
-        video_id: str,
-        difficulty: str = "easy",
-        video_title: Optional[str] = None,
-        channel_title: Optional[str] = None,
-        thumbnail_url: Optional[str] = None,
-        duration_seconds: Optional[int] = None,
-    ) -> None:
-        self._post_json(
-            "/api/play",
-            {
-                "video_id": str(video_id),
-                "difficulty": str(difficulty),
-                "video_title": video_title,
-                "channel_title": channel_title,
-                "thumbnail_url": thumbnail_url,
-                "duration_seconds": duration_seconds,
-            },
-        )
-
-    def pause(self) -> None:
-        self._post_json("/api/pause", {})
-
-    def resume(self) -> None:
-        self._post_json("/api/resume", {})
-
-    def restart(self) -> None:
-        self._post_json("/api/restart", {})
-
-    def stop(self) -> None:
-        self._post_json("/api/stop", {})
-
-    def set_difficulty(self, difficulty: str) -> None:
-        self._post_json("/api/difficulty", {"difficulty": str(difficulty)})
-
-    def _get_json(self, path: str) -> Any:
-        request_url = self._base_url + path
-        request_object = urllib.request.Request(request_url, method="GET")
-        try:
-            with urllib.request.urlopen(request_object, timeout=self._timeout_seconds) as response:
-                raw_bytes = response.read()
-        except (urllib.error.URLError, socket.timeout) as exception:
-            raise ControlApiError(f"GET failed for {request_url}: {exception}") from exception
-
-        try:
-            return json.loads(raw_bytes.decode("utf-8"))
         except Exception as exception:
-            raise ControlApiError(f"Failed to decode JSON from {request_url}: {exception}") from exception
-
-    def _post_json(self, path: str, body: Dict[str, Any]) -> Any:
-        request_url = self._base_url + path
-        raw_body = json.dumps(body, ensure_ascii=True).encode("utf-8")
-        request_object = urllib.request.Request(
-            request_url,
-            data=raw_body,
-            method="POST",
-            headers={"Content-Type": "application/json; charset=utf-8"},
-        )
-
-        try:
-            with urllib.request.urlopen(request_object, timeout=self._timeout_seconds) as response:
-                raw_bytes = response.read()
-        except (urllib.error.URLError, socket.timeout) as exception:
-            raise ControlApiError(f"POST failed for {request_url}: {exception}") from exception
-
-        try:
-            payload = json.loads(raw_bytes.decode("utf-8"))
-        except Exception:
-            payload = None
-
-        if isinstance(payload, dict) and payload.get("ok") is False:
-            error_text = str(payload.get("error") or "").strip() or "Unknown error"
-            raise ControlApiError(f"Request failed for {request_url}: {error_text}")
-
-        return payload
+            return ControlStatus(
+                ok=False,
+                state="ERROR",
+                video_id=None,
+                video_title=None,
+                channel_title=None,
+                thumbnail_url=None,
+                duration_seconds=None,
+                elapsed_seconds=None,
+                difficulty=None,
+                error=str(exception),
+            )

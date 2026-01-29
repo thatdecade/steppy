@@ -91,8 +91,11 @@ class Ui_MainWindow(object):
         self.actionExit.setObjectName("actionExit")
         self.actionFull_Screen = QtGui.QAction(parent=MainWindow)
         self.actionFull_Screen.setObjectName("actionFull_Screen")
+        self.actionGamepad_Setup = QtGui.QAction(parent=MainWindow)
+        self.actionGamepad_Setup.setObjectName("actionGamepad_Setup")
         self.menuFile.addAction(self.actionFull_Screen)
         self.menuFile.addAction(self.actionPreferences)
+        self.menuFile.addAction(self.actionGamepad_Setup)
         self.menuFile.addAction(self.actionExit)
         self.menubar.addAction(self.menuFile.menuAction())
 
@@ -106,3 +109,4 @@ class Ui_MainWindow(object):
         self.actionPreferences.setText(_translate("MainWindow", "Preferences"))
         self.actionExit.setText(_translate("MainWindow", "Exit"))
         self.actionFull_Screen.setText(_translate("MainWindow", "Full Screen"))
+        self.actionGamepad_Setup.setText(_translate("MainWindow", "Gamepad Setup"))

@@ -139,6 +139,7 @@ QLabel#hintLabel {
     </property>
     <addaction name="actionFull_Screen"/>
     <addaction name="actionPreferences"/>
+    <addaction name="actionGamepad_Setup"/>
     <addaction name="actionExit"/>
    </widget>
    <addaction name="menuFile"/>
@@ -161,6 +162,11 @@ QLabel#hintLabel {
   <action name="actionFull_Screen">
    <property name="text">
     <string>Full Screen</string>
+   </property>
+  </action>
+  <action name="actionGamepad_Setup">
+   <property name="text">
+    <string>Gamepad Setup</string>
    </property>
   </action>
  </widget>

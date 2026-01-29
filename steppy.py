@@ -7,29 +7,26 @@ Integration
 - Creates QApplication
 - Loads config and paths
 - Instantiates controller and main window
-- Starts Flask web server in background
-- Wires control polling and starts the Qt event loop
+- Starts embedded Flask web server via control_api.ControlApiBridge
+- Wires control signals and starts the Qt event loop
 
 TODO (pending integration with other modules)
 - Replace local path discovery with paths.py (not available yet).
-- Replace polling bridge with AppController wiring from app_controller.py (not available yet).
+- Replace direct MainWindow wiring with AppController wiring from app_controller.py (not available yet).
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
 
 from config import get_config
-from control_api import ControlApiClient, ControlApiError, ControlStatus
+from control_api import ControlApiBridge, ControlStatus
 from main_window import MainWindow
 
 
@@ -37,8 +34,6 @@ from main_window import MainWindow
 class _RuntimeState:
     last_state: str = "UNKNOWN"
     last_video_id: Optional[str] = None
-    last_seen_ok: bool = False
-    last_error_text: Optional[str] = None
 
 
 def _resolve_web_root_dir() -> Path:
@@ -76,33 +71,6 @@ def _resolve_web_root_dir() -> Path:
     return Path.cwd()
 
 
-def _start_web_server_in_background(*, bind_host: str, bind_port: int, web_root_dir: Path, debug: bool) -> None:
-    """Start the Flask server in a daemon thread."""
-
-    import web_server
-
-    web_server_config = web_server.WebServerConfig(
-        host=str(bind_host),
-        port=int(bind_port),
-        web_root_dir=Path(web_root_dir),
-        debug=bool(debug),
-    )
-
-    flask_app = web_server.create_flask_app(web_server_config)
-
-    def run_server() -> None:
-        flask_app.run(
-            host=web_server_config.host,
-            port=web_server_config.port,
-            debug=web_server_config.debug,
-            use_reloader=False,
-            threaded=False,
-        )
-
-    server_thread = threading.Thread(target=run_server, name="steppy-web-server", daemon=True)
-    server_thread.start()
-
-
 def _apply_status_to_window(*, main_window: MainWindow, status: ControlStatus, runtime_state: _RuntimeState) -> None:
     state_value = (status.state or "").strip().upper()
 
@@ -117,6 +85,7 @@ def _apply_status_to_window(*, main_window: MainWindow, status: ControlStatus, r
         main_window.hide_idle()
         if status.video_id and status.video_id != runtime_state.last_video_id:
             main_window.load_video(status.video_id)
+            runtime_state.last_video_id = status.video_id
         try:
             main_window.play()
         except Exception:
@@ -126,23 +95,27 @@ def _apply_status_to_window(*, main_window: MainWindow, status: ControlStatus, r
         main_window.hide_idle()
         if status.video_id and status.video_id != runtime_state.last_video_id:
             main_window.load_video(status.video_id)
+            runtime_state.last_video_id = status.video_id
         try:
             main_window.pause()
         except Exception:
             pass
 
     runtime_state.last_state = state_value or "UNKNOWN"
-    runtime_state.last_video_id = status.video_id
-    runtime_state.last_seen_ok = bool(status.ok)
-    runtime_state.last_error_text = status.error
 
 
 def main() -> int:
     argument_parser = argparse.ArgumentParser(description="Steppy application")
-    argument_parser.add_argument("--demo", action="store_true", help="Do not start web server or poll control API.")
+    argument_parser.add_argument("--demo", action="store_true", help="Do not start web server or control bridge.")
     argument_parser.add_argument("--kiosk", action="store_true", help="Enable kiosk window flags and hide cursor.")
     argument_parser.add_argument("--fullscreen", action="store_true", help="Start in fullscreen.")
     argument_parser.add_argument("--web-debug", action="store_true", help="Enable Flask debug mode.")
+    argument_parser.add_argument(
+        "--poll-interval-ms",
+        type=int,
+        default=200,
+        help="In-process control status polling interval (Qt timer).",
+    )
     parsed_args = argument_parser.parse_args()
 
     app_config, _config_path = get_config()
@@ -161,44 +134,40 @@ def main() -> int:
 
     web_root_dir = _resolve_web_root_dir()
 
-    _start_web_server_in_background(
+    runtime_state = _RuntimeState()
+
+    control_bridge = ControlApiBridge(
         bind_host=str(app_config.web_server.host),
         bind_port=int(app_config.web_server.port),
         web_root_dir=web_root_dir,
         debug=bool(parsed_args.web_debug),
+        poll_interval_ms=int(parsed_args.poll_interval_ms),
+        parent=main_window,
     )
 
-    control_client = ControlApiClient(
-        host=str(app_config.web_server.host),
-        port=int(app_config.web_server.port),
-        timeout_seconds=0.20,
-    )
-
-    runtime_state = _RuntimeState()
-
-    poll_timer = QTimer(main_window)
-    poll_timer.setInterval(200)
-
-    def poll_control_status() -> None:
-        try:
-            status = control_client.get_status()
-        except ControlApiError:
+    def on_video_changed(status_object: object) -> None:
+        status = status_object if isinstance(status_object, ControlStatus) else None
+        if status is None:
             return
-        except Exception:
+        _apply_status_to_window(main_window=main_window, status=status, runtime_state=runtime_state)
+
+    def on_state_changed(_state_text: str) -> None:
+        status = control_bridge.last_status()
+        if status is None:
             return
+        _apply_status_to_window(main_window=main_window, status=status, runtime_state=runtime_state)
 
-        if not status.ok:
+    def on_error_changed(error_text: str) -> None:
+        cleaned = (error_text or "").strip()
+        if not cleaned:
             return
+        print("Control API error: " + cleaned, file=sys.stderr)
 
-        try:
-            _apply_status_to_window(main_window=main_window, status=status, runtime_state=runtime_state)
-        except Exception:
-            return
+    control_bridge.video_changed.connect(on_video_changed)
+    control_bridge.state_changed.connect(on_state_changed)
+    control_bridge.error_changed.connect(on_error_changed)
 
-    poll_timer.timeout.connect(poll_control_status)
-    poll_timer.start()
-
-    time.sleep(0.05)
+    control_bridge.start()
 
     return int(qt_application.exec())
 
