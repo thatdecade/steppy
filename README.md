@@ -1,22 +1,31 @@
 ## Steppy
 
-Steppy is a rhythm game frontend for dual monitor / dance pads setups.
+Steppy is a rhythm game frontend for dance pad setups.
+
+When idle or between songs, Steppy displays a QR code that opens a local webpage for song selection and controls.
 
 ---
 
 ## Features
 
-### Touchscreen
+### Gameplay
 
-* Touchscreen is the primary and only user interaction surface.
-* Large targets, no mouse, no keyboard required.
-* On screen keyboard provided by the app.
+* YouTube video playback with a rhythm note overlay.
+* Deterministic auto chart timings
 
-### Duall Monitor
+### Idle
 
-* Upper display (TV): gameplay video and note overlay only.
-* Lower display (touchscreen): browsing, controls, pause menu.
-* No duplicated playback surfaces.
+* Shows logo when not playing.
+* Shows a generated QR code linking to the local control webpage.
+* Optionally continues a muted attract playlist behind the idle screen.
+
+### Web App
+
+* Phone friendly control UI served locally from the Steppy PC.
+* Search, browse, and playlists are powered by YouTube Data API via the local backend.
+* Controls: play, pause, resume, restart, change difficulty, stop.
+* Shows basic status: current song, elapsed time, difficulty, and playing state.
+* Designed for trusted local networks. No login or pairing flow.
 
 ### YouTube
 
@@ -43,7 +52,7 @@ Steppy is a rhythm game frontend for dual monitor / dance pads setups.
 * Resume
 * Restart song
 * Change difficulty while paused
-* Stop and return to browse
+* Stop and return to idle
 
 ### Deterministic timing
 
@@ -62,6 +71,7 @@ pip install PyQt6 PyQt6-WebEngine
 pip install google-api-python-client
 pip install simfile
 pip install platformdirs pydantic
+pip install flask qrcode
 ```
 
 Async libraries are intentionally avoided initially. Qt signals and timers are preferred.
