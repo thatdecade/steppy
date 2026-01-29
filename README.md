@@ -6,12 +6,31 @@ When idle or between songs, Steppy displays a QR code that opens a local webpage
 
 ---
 
+## Template assets not included
+
+This repo does not include third-party template files or assets.
+
+Steppy is prototyped with the UI and assets from "Affan - PWA Mobile HTML Template" by designing-world (care.designingworld@gmail.com)
+
+Those purchased template files (including any images, icons, fonts, SVGs, CSS, JS, and HTML) are not redistributed here.  If you own a license for the template, you can copy your own local template files into an `assets/` directory. 
+
+Steppy will still run without the assets, but it will look a lot more plain.
+
+Links:
+- https://themeforest.net/user/designing-world
+- https://themeforest.net/item/affan-pwa-mobile-html-template/29715548
+
+---
+
 ## Features
 
 ### Gameplay
 
 * YouTube video playback with a rhythm note overlay.
 * Deterministic auto chart timings
+* Gameplay starts immediately on song selection.
+* Charts are generated instantly using fast heuristics.
+* Rolling chart generation continues in the background.
 
 ### Idle
 
@@ -32,12 +51,6 @@ When idle or between songs, Steppy displays a QR code that opens a local webpage
 * Custom search and browse UI using YouTube Data API.
 * Attract mode plays a curated YouTube playlist muted.
 * User can search and select any song instantly.
-
-### Gameplay
-
-* Gameplay starts immediately on song selection.
-* Charts are generated instantly using fast heuristics.
-* Rolling chart generation continues in the background.
 
 ### Charts
 
@@ -72,6 +85,3 @@ pip install google-api-python-client
 pip install simfile
 pip install platformdirs pydantic
 pip install flask qrcode
-```
-
-Async libraries are intentionally avoided initially. Qt signals and timers are preferred.
