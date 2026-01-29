@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from flask import Flask, Response, jsonify, make_response, request, send_file
+from flask import Flask, Response, jsonify, make_response, request, send_file, redirect
 
 from youtube_api import YouTubeApi, YouTubeApiError
 
@@ -268,11 +268,11 @@ def create_flask_app(config: WebServerConfig) -> Flask:
 
     @flask_app.get("/")
     def route_root() -> Response:
-        return serve_file_from_web_root("index.html")
+        return redirect('/controller.html')
 
     @flask_app.get("/index.html")
     def route_index_html() -> Response:
-        return serve_file_from_web_root("index.html")
+        return redirect('/controller.html')
 
     @flask_app.get("/controller")
     def route_controller() -> Response:

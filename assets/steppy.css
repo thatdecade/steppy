@@ -214,3 +214,11 @@
   }
 }
 
+
+
+/* Steppy: hide Affan footer navigation */
+.footer-nav-area { display: none !important; }
+
+
+/* Steppy: controller does not need browser back button */
+.steppy-controller .back-button { visibility: hidden; pointer-events: none; }
