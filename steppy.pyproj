@@ -23,6 +23,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="config.py" />
+    <Compile Include="main_window.py" />
+    <Compile Include="qr_code.py" />
     <Compile Include="steppy.py" />
     <Compile Include="web_player_bridge.py" />
     <Compile Include="web_server.py" />
@@ -40,6 +42,7 @@
     </Interpreter>
   </ItemGroup>
   <ItemGroup>
+    <Content Include="makefile" />
     <Content Include="steppy_config.json" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
