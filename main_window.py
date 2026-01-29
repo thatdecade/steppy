@@ -34,8 +34,8 @@ import sys
 from dataclasses import dataclass
 from typing import Optional
 
-from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtGui import QImage, QKeyEvent, QPixmap
+from PyQt6.QtCore import QEvent, QPoint, QRect, QTimer, Qt, QUrl
+from PyQt6.QtGui import QDesktopServices, QImage, QKeyEvent, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
@@ -114,11 +114,14 @@ class MainWindow(QMainWindow):
         self._idle_url_hint_label: Optional[QLabel] = None
         self._status_label: Optional[QLabel] = None
 
+        self._idle_control_url: str = ""
+        self._idle_url_hover_active: bool = False
+
         self._build_idle_overlay_elements()
-        
+
         self.ui.actionPreferences.triggered.connect(self.on_action_preferences)
         self.ui.actionFull_Screen.triggered.connect(self.on_action_fullscreen_toggle)
-        self.ui.actionExit       .triggered.connect(self.on_action_exit)
+        self.ui.actionExit.triggered.connect(self.on_action_exit)
 
         # If config load fails, let it raise. You asked for hard failures.
         app_config, _config_path = get_config()
@@ -134,7 +137,7 @@ class MainWindow(QMainWindow):
 
         self.show_idle()
         self._set_status_text("IDLE  |  F11 fullscreen  |  press space to test ")
-        
+
     def on_action_fullscreen_toggle(self):
         if self.isFullScreen():
             self.showNormal()
@@ -229,6 +232,11 @@ class MainWindow(QMainWindow):
         splash_image_label.setScaledContents(True)
         splash_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        # Capture click/hover events on the full splash surface. The QR card remains transparent
+        # to mouse events, but we can still treat the URL region as clickable via event filtering.
+        splash_image_label.setMouseTracking(True)
+        splash_image_label.installEventFilter(self)
+
         qr_card = QFrame(splash_frame)
         qr_card.setObjectName("idleQrCard")
         qr_card.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -269,6 +277,7 @@ class MainWindow(QMainWindow):
         url_hint_label = QLabel("http://<host>:<port>/", qr_card)
         url_hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         url_hint_label.setStyleSheet(f"color: {THEME_OFFWHITE}; font-size: 12px;")
+        url_hint_label.adjustSize()
 
         footer_label = QLabel("Steppy", qr_card)
         footer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -302,11 +311,71 @@ class MainWindow(QMainWindow):
         self._position_idle_overlays()
 
     def _set_idle_url_hint(self, url_text: str) -> None:
+        self._idle_control_url = str(url_text or "").strip()
+
         if self._idle_url_hint_label is None:
             return
-        self._idle_url_hint_label.setText(url_text)
+
+        self._idle_url_hint_label.setText(self._idle_control_url)
         self._idle_url_hint_label.adjustSize()
         self._position_idle_overlays()
+
+    def _open_idle_url_in_browser(self) -> None:
+        url_text = (self._idle_control_url or "").strip()
+        if not url_text:
+            return
+
+        url = QUrl.fromUserInput(url_text)
+        if not url.isValid():
+            self._set_status_text("Invalid URL: " + url_text)
+            return
+
+        QDesktopServices.openUrl(url)
+
+    def _idle_url_rect_global(self) -> Optional[QRect]:
+        if self._idle_url_hint_label is None:
+            return None
+
+        if not self.ui.splashFrame.isVisible():
+            return None
+
+        if not self._idle_url_hint_label.isVisible():
+            return None
+
+        top_left_global = self._idle_url_hint_label.mapToGlobal(QPoint(0, 0))
+        return QRect(top_left_global, self._idle_url_hint_label.size())
+
+    def eventFilter(self, watched, event) -> bool:
+        # The QR card is transparent for mouse events, so clicks land on splashImageLabel.
+        # We capture those and treat the URL label region as clickable.
+        if watched is self.ui.splashImageLabel and self.ui.splashFrame.isVisible():
+            url_rect_global = self._idle_url_rect_global()
+
+            if event.type() == QEvent.Type.Leave:
+                if self._idle_url_hover_active:
+                    self._idle_url_hover_active = False
+                    self.ui.splashImageLabel.unsetCursor()
+                return super().eventFilter(watched, event)
+
+            if url_rect_global is not None and event.type() == QEvent.Type.MouseMove:
+                mouse_global = event.globalPosition().toPoint()
+                is_over_url = url_rect_global.contains(mouse_global)
+
+                if is_over_url != self._idle_url_hover_active:
+                    self._idle_url_hover_active = is_over_url
+                    if is_over_url and not self._kiosk_mode:
+                        self.ui.splashImageLabel.setCursor(Qt.CursorShape.PointingHandCursor)
+                    else:
+                        self.ui.splashImageLabel.unsetCursor()
+
+            if url_rect_global is not None and event.type() == QEvent.Type.MouseButtonRelease:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    mouse_global = event.globalPosition().toPoint()
+                    if url_rect_global.contains(mouse_global):
+                        self._open_idle_url_in_browser()
+                        return True
+
+        return super().eventFilter(watched, event)
 
     def _position_idle_overlays(self) -> None:
         if self._idle_qr_card is None:
@@ -337,7 +406,7 @@ class MainWindow(QMainWindow):
             debug_height = max(1, debug_size.height())
             debug_label.setGeometry(IDLE_DEBUG_MARGIN_LEFT_PX, IDLE_DEBUG_MARGIN_TOP_PX, debug_width, debug_height)
             debug_label.raise_()
-            
+
     def _set_status_text(self, text: str) -> None:
         if self._status_label is None:
             return
@@ -361,7 +430,7 @@ class MainWindow(QMainWindow):
                 self.show_idle()
                 self._set_status_text("IDLE  |  space toggles  |  F11 fullscreen  |  Esc quit")
             return
-          
+
         if event.key() == Qt.Key.Key_Escape:
             if self.isFullScreen():
                 self.showNormal()
@@ -371,6 +440,7 @@ class MainWindow(QMainWindow):
             self.on_action_fullscreen_toggle()
 
         super().keyPressEvent(event)
+
 
 def main() -> int:
     application_arguments = sys.argv if sys.argv and sys.argv[0] else ["steppy"]
