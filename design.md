@@ -307,9 +307,6 @@ Thumbnail download and local caching.
 * Stores locally and returns file paths or local URLs
 * Web app can serve cached thumbnails for faster phone UI
 
-**Standalone `main()`**
-Downloads sample thumbnails and prints file paths.
-
 ---
 
 ### persistence.py
