@@ -6,6 +6,8 @@
     lastSearch: "steppyLastSearch"
   };
 
+  let latestSearchResultsById = {};
+
   function getCurrentPage() {
     const pageName = document.documentElement.getAttribute("data-steppy-page");
     return pageName || "";
@@ -42,25 +44,23 @@
     element.textContent = textValue;
   }
 
-  function setBadgeStyle(elementId, stateText) {
+  function setBadgeState(elementId, stateText) {
     const badgeElement = document.getElementById(elementId);
     if (!badgeElement) {
       return;
     }
 
-    badgeElement.classList.remove("bg-secondary", "bg-success", "bg-warning", "bg-danger", "bg-info");
-
     const normalizedState = String(stateText || "").toUpperCase();
+    badgeElement.classList.remove("steppy-state-playing", "steppy-state-paused", "steppy-state-loading", "steppy-state-error");
+
     if (normalizedState === "PLAYING") {
-      badgeElement.classList.add("bg-success");
+      badgeElement.classList.add("steppy-state-playing");
     } else if (normalizedState === "PAUSED") {
-      badgeElement.classList.add("bg-warning");
-    } else if (normalizedState === "ERROR") {
-      badgeElement.classList.add("bg-danger");
+      badgeElement.classList.add("steppy-state-paused");
     } else if (normalizedState === "LOADING") {
-      badgeElement.classList.add("bg-info");
-    } else {
-      badgeElement.classList.add("bg-secondary");
+      badgeElement.classList.add("steppy-state-loading");
+    } else if (normalizedState === "ERROR") {
+      badgeElement.classList.add("steppy-state-error");
     }
 
     badgeElement.textContent = normalizedState || "IDLE";
@@ -75,7 +75,7 @@
     return { toastElement, toastBodyElement };
   }
 
-  function showToast(message, bootstrapBackgroundClass) {
+  function showToast(message) {
     const toastParts = ensureToast();
     if (!toastParts) {
       return;
@@ -83,9 +83,6 @@
 
     const { toastElement, toastBodyElement } = toastParts;
     toastBodyElement.textContent = String(message);
-
-    toastElement.classList.remove("text-bg-primary", "text-bg-success", "text-bg-warning", "text-bg-danger", "text-bg-info");
-    toastElement.classList.add(bootstrapBackgroundClass || "text-bg-primary");
 
     if (!window.bootstrap || !window.bootstrap.Toast) {
       return;
@@ -107,18 +104,19 @@
     );
 
     const response = await fetch(url, options);
-    if (!response.ok) {
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
       return { ok: false, status: response.status, data: null };
     }
 
     const data = await response.json();
-    return { ok: true, status: response.status, data };
+    return { ok: response.ok, status: response.status, data };
   }
 
   async function probeBackend() {
     try {
       const probeResult = await fetchJson("/api/status");
-      return probeResult.ok;
+      return Boolean(probeResult.ok && probeResult.data && probeResult.data.ok);
     } catch (error) {
       return false;
     }
@@ -129,7 +127,7 @@
     setText("steppy-backend-status", backendStatusText);
   }
 
-  async function postCommand(endpointPath, payloadObject) {
+  async function postJson(endpointPath, payloadObject) {
     const requestBody = payloadObject ? JSON.stringify(payloadObject) : "{}";
     const result = await fetchJson(endpointPath, {
       method: "POST",
@@ -139,7 +137,7 @@
       },
       body: requestBody
     });
-    return result.ok;
+    return Boolean(result.ok && result.data && result.data.ok);
   }
 
   function applyDifficultyButtonState(selectedDifficulty) {
@@ -158,29 +156,15 @@
     setText("steppy-difficulty", selectedDifficulty);
   }
 
-  function getDemoSearchResults(queryText) {
-    const trimmedQuery = String(queryText || "").trim();
-    const titleSuffix = trimmedQuery ? (" for \"" + trimmedQuery + "\"") : "";
-    return [
-      {
-        video_id: "dQw4w9WgXcQ",
-        title: "Demo result" + titleSuffix,
-        duration_seconds: 213,
-        thumbnail_url: "assets/img/bg-img/p1.jpg"
-      },
-      {
-        video_id: "kxopViU98Xo",
-        title: "Another demo result" + titleSuffix,
-        duration_seconds: 180,
-        thumbnail_url: "assets/img/bg-img/p2.jpg"
-      },
-      {
-        video_id: "J---aiyznGQ",
-        title: "One more demo result" + titleSuffix,
-        duration_seconds: 196,
-        thumbnail_url: "assets/img/bg-img/p3.jpg"
-      }
-    ];
+  function pickBestThumbnailUrl(thumbnails) {
+    if (!Array.isArray(thumbnails) || thumbnails.length === 0) {
+      return "assets/img/bg-img/1.jpg";
+    }
+    const first = thumbnails[0];
+    if (first && typeof first.url === "string" && first.url) {
+      return first.url;
+    }
+    return "assets/img/bg-img/1.jpg";
   }
 
   function renderSearchResults(videoResults) {
@@ -189,12 +173,13 @@
       return;
     }
 
+    latestSearchResultsById = {};
     resultsGrid.innerHTML = "";
 
     if (!videoResults || videoResults.length === 0) {
       const emptyElement = document.createElement("div");
       emptyElement.className = "col-12";
-      emptyElement.innerHTML = '<div class="alert alert-secondary mb-0">No results</div>';
+      emptyElement.innerHTML = '<div class="alert steppy-alert mb-0">No results</div>';
       resultsGrid.appendChild(emptyElement);
       return;
     }
@@ -202,25 +187,40 @@
     videoResults.forEach(function (resultItem) {
       const videoId = String(resultItem.video_id || "");
       const titleText = String(resultItem.title || "Untitled");
+      const channelText = String(resultItem.channel_title || "");
       const durationText = formatElapsedSeconds(Number(resultItem.duration_seconds || 0));
-      const thumbnailUrl = String(resultItem.thumbnail_url || "assets/img/bg-img/p1.jpg");
+      const thumbnailUrl = pickBestThumbnailUrl(resultItem.thumbnails);
+
+      latestSearchResultsById[videoId] = {
+        video_id: videoId,
+        title: titleText,
+        channel_title: channelText,
+        duration_seconds: Number(resultItem.duration_seconds || 0),
+        thumbnail_url: thumbnailUrl
+      };
 
       const columnElement = document.createElement("div");
       columnElement.className = "col-12";
 
+      const safeTitle = titleText.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const safeChannel = channelText.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
       const cardHtml = [
-        '<div class="card single-product-card">',
+        '<div class="card steppy-result-card">',
         '  <div class="card-body">',
         '    <div class="d-flex align-items-center">',
         '      <div class="card-side-img">',
         '        <a class="product-thumbnail d-block" href="#" data-steppy-play="' + videoId + '">',
-        '          <img src="' + thumbnailUrl + '" alt="">',
+        '          <img class="steppy-thumb" src="' + thumbnailUrl + '" alt="">',
         '        </a>',
         '      </div>',
-        '      <div class="card-content px-4 py-2 w-100">',
-        '        <a class="product-title d-block text-truncate mt-0" href="#" data-steppy-play="' + videoId + '">' + titleText + '</a>',
-        '        <p class="sale-price mb-2">' + durationText + '</p>',
-        '        <button class="btn btn-primary btn-sm" type="button" data-steppy-play="' + videoId + '">Play</button>',
+        '      <div class="card-content px-3 py-1 w-100">',
+        '        <a class="product-title d-block text-truncate mt-0" href="#" data-steppy-play="' + videoId + '">' + safeTitle + '</a>',
+        '        <div class="small steppy-muted text-truncate">' + safeChannel + '</div>',
+        '        <div class="d-flex align-items-center justify-content-between mt-2">',
+        '          <div class="small steppy-muted">' + durationText + '</div>',
+        '          <button class="btn btn-primary btn-sm steppy-btn" type="button" data-steppy-play="' + videoId + '">Play</button>',
+        '        </div>',
         '      </div>',
         '    </div>',
         '  </div>',
@@ -244,34 +244,47 @@
       searchInput.value = lastSearch;
     }
 
-    async function runSearch(queryText) {
+    let activeSearchToken = 0;
+
+    async function runSearch(queryText, pageToken) {
       const trimmedQuery = String(queryText || "").trim();
+      if (!backendAvailable) {
+        showToast("Backend not connected");
+        return;
+      }
+
       window.localStorage.setItem(STEPPY_STORAGE_KEYS.lastSearch, trimmedQuery);
 
-      if (!backendAvailable) {
-        const demoResults = getDemoSearchResults(trimmedQuery);
-        renderSearchResults(demoResults);
-        showToast("Demo search results loaded", "text-bg-info");
-        return;
-      }
+      const localToken = activeSearchToken + 1;
+      activeSearchToken = localToken;
 
       const encodedQuery = encodeURIComponent(trimmedQuery);
-      const result = await fetchJson("/api/search?q=" + encodedQuery);
-      if (!result.ok) {
-        showToast("Search failed", "text-bg-danger");
+      const url = pageToken ? ("/api/search?q=" + encodedQuery + "&page_token=" + encodeURIComponent(pageToken)) : ("/api/search?q=" + encodedQuery);
+
+      const result = await fetchJson(url);
+      if (activeSearchToken !== localToken) {
         return;
       }
 
-      const resultList = Array.isArray(result.data && result.data.results) ? result.data.results : [];
-      renderSearchResults(resultList);
+      if (!result.ok || !result.data || !result.data.ok) {
+        showToast("Search failed");
+        renderSearchResults([]);
+        return;
+      }
+
+      const responseBlock = result.data.response || {};
+      const items = Array.isArray(responseBlock.items) ? responseBlock.items : [];
+      renderSearchResults(items);
     }
 
     searchForm.addEventListener("submit", function (event) {
       event.preventDefault();
-      runSearch(searchInput.value);
+      runSearch(searchInput.value, null);
     });
 
-    runSearch(searchInput.value);
+    if (searchInput.value.trim()) {
+      runSearch(searchInput.value, null);
+    }
   }
 
   function bindPlayClickHandlers(backendAvailable) {
@@ -293,19 +306,27 @@
         return;
       }
 
-      const selectedDifficulty = getSelectedDifficulty();
-
       if (!backendAvailable) {
-        showToast("Play queued (demo): " + videoId, "text-bg-info");
+        showToast("Backend not connected");
         return;
       }
 
-      const ok = await postCommand("/api/play", { video_id: videoId, difficulty: selectedDifficulty });
+      const selectedDifficulty = getSelectedDifficulty();
+      const details = latestSearchResultsById[videoId] || null;
+      const playPayload = {
+        video_id: videoId,
+        difficulty: selectedDifficulty,
+        video_title: details ? details.title : null,
+        channel_title: details ? details.channel_title : null,
+        duration_seconds: details ? details.duration_seconds : null,
+        thumbnail_url: details ? details.thumbnail_url : null
+      };
+      const ok = await postJson("/api/play", playPayload);
       if (ok) {
-        showToast("Play requested", "text-bg-success");
+        showToast("Play requested");
         window.location.href = "controller.html";
       } else {
-        showToast("Play failed", "text-bg-danger");
+        showToast("Play failed");
       }
     });
   }
@@ -325,15 +346,13 @@
         applyDifficultyButtonState(difficultyValue);
 
         if (!backendAvailable) {
-          showToast("Difficulty set (local): " + difficultyValue, "text-bg-info");
+          showToast("Backend not connected");
           return;
         }
 
-        const ok = await postCommand("/api/difficulty", { difficulty: difficultyValue });
-        if (ok) {
-          showToast("Difficulty updated", "text-bg-success");
-        } else {
-          showToast("Difficulty update failed", "text-bg-danger");
+        const ok = await postJson("/api/difficulty", { difficulty: difficultyValue });
+        if (!ok) {
+          showToast("Difficulty update failed");
         }
       });
     });
@@ -347,53 +366,73 @@
         }
 
         if (!backendAvailable) {
-          showToast("Command ignored (no backend): " + commandName, "text-bg-warning");
+          showToast("Backend not connected");
           return;
         }
 
         const endpoint = "/api/" + encodeURIComponent(commandName);
-        const ok = await postCommand(endpoint, null);
-        if (ok) {
-          showToast("Command sent: " + commandName, "text-bg-success");
-        } else {
-          showToast("Command failed: " + commandName, "text-bg-danger");
+        const ok = await postJson(endpoint, null);
+        if (!ok) {
+          showToast("Command failed: " + commandName);
         }
       });
     });
   }
 
-  async function pollStatusLoop() {
-    const currentPage = getCurrentPage();
-    if (currentPage !== "controller") {
-      return;
+  async function pollStatusOnce() {
+    const result = await fetchJson("/api/status");
+    if (!result.ok || !result.data || !result.data.ok) {
+      return null;
     }
+    return result.data;
+  }
 
-    try {
-      const result = await fetchJson("/api/status");
-      if (!result.ok) {
-        return;
-      }
+  function updateControllerFromStatus(status) {
+    const stateText = String(status.state || "IDLE");
+    const videoId = status.video_id ? String(status.video_id) : "";
+    const videoTitle = status.video_title ? String(status.video_title) : "";
+    const channelTitle = status.channel_title ? String(status.channel_title) : "";
+    const elapsedSeconds = Number(status.elapsed_seconds || 0);
+    const difficultyText = status.difficulty ? String(status.difficulty) : getSelectedDifficulty();
 
-      const status = result.data || {};
-      const stateText = String(status.state || "IDLE");
-      const videoId = status.video_id ? String(status.video_id) : "";
-      const elapsedSeconds = Number(status.elapsed_seconds || 0);
-      const difficultyText = status.difficulty ? String(status.difficulty) : getSelectedDifficulty();
-
-      if (videoId) {
-        setText("steppy-song-title", "Video " + videoId);
-        setText("steppy-song-meta", "Video id: " + videoId);
+    if (videoId) {
+      const shownTitle = videoTitle ? videoTitle : ("Video " + videoId);
+      setText("steppy-song-title", shownTitle);
+      if (channelTitle) {
+        setText("steppy-song-meta", channelTitle);
       } else {
-        setText("steppy-song-title", "No song selected");
-        setText("steppy-song-meta", "Select a song from Search");
+        setText("steppy-song-meta", "Video id: " + videoId);
+      }
+    } else {
+      setText("steppy-song-title", "No song selected");
+      setText("steppy-song-meta", "Select a song from Search");
+    }
+
+    setText("steppy-elapsed", formatElapsedSeconds(elapsedSeconds));
+    setText("steppy-difficulty", difficultyText);
+    setBadgeState("steppy-state-badge", stateText);
+  }
+
+  async function startStatusLoop() {
+    let backoffMs = 500;
+
+    async function tick() {
+      try {
+        const status = await pollStatusOnce();
+        if (status) {
+          updateControllerFromStatus(status);
+          backoffMs = 500;
+        } else {
+          backoffMs = Math.min(4000, Math.floor(backoffMs * 1.5));
+        }
+      } catch (error) {
+        backoffMs = Math.min(4000, Math.floor(backoffMs * 1.5));
       }
 
-      setText("steppy-elapsed", formatElapsedSeconds(elapsedSeconds));
-      setText("steppy-difficulty", difficultyText);
-      setBadgeStyle("steppy-state-badge", stateText);
-    } catch (error) {
-      return;
+      window.setTimeout(tick, backoffMs);
     }
+
+    tick();
   }
 
   async function initialize() {
@@ -402,10 +441,8 @@
     if (getCurrentPage() === "controller") {
       setBackendStatusText(backendAvailable);
       bindControllerHandlers(backendAvailable);
-
       if (backendAvailable) {
-        setInterval(pollStatusLoop, 500);
-        pollStatusLoop();
+        startStatusLoop();
       }
     }
 
@@ -418,7 +455,7 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     initialize().catch(function () {
-      showToast("Initialization failed", "text-bg-danger");
+      showToast("Initialization failed");
     });
   });
 })();
