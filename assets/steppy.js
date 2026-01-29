@@ -6,22 +6,66 @@
     lastSearch: "steppyLastSearch"
   };
 
+  const STATUS_POLL_BASE_MS = 1500;
+  const STATUS_POLL_MAX_MS = 8000;
+  const STATUS_POLL_HIDDEN_MS = 8000;
+
+  const LOCAL_FALLBACK_THUMBNAIL_URL = "assets/img/core-img/logo.png";
+
   let latestSearchResultsById = {};
+  let statusLoopStarted = false;
 
   function getCurrentPage() {
     const pageName = document.documentElement.getAttribute("data-steppy-page");
     return pageName || "";
   }
 
-  function formatElapsedSeconds(elapsedSeconds) {
-    if (!Number.isFinite(elapsedSeconds) || elapsedSeconds < 0) {
-      return "0:00";
+  function setText(elementId, valueText) {
+    const element = document.getElementById(elementId);
+    if (!element) {
+      return;
     }
-    const totalSeconds = Math.floor(elapsedSeconds);
-    const minutes = Math.floor(totalSeconds / 60);
+    element.textContent = valueText == null ? "" : String(valueText);
+  }
+
+  function setHtml(elementId, htmlText) {
+    const element = document.getElementById(elementId);
+    if (!element) {
+      return;
+    }
+    element.innerHTML = htmlText;
+  }
+
+  function clampNumber(value, minimumValue, maximumValue) {
+    if (!Number.isFinite(value)) {
+      return minimumValue;
+    }
+    return Math.max(minimumValue, Math.min(maximumValue, value));
+  }
+
+  function formatElapsedSeconds(elapsedSeconds) {
+    const totalSeconds = Math.max(0, Math.floor(Number(elapsedSeconds) || 0));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
     const seconds = totalSeconds % 60;
-    const secondsText = seconds < 10 ? "0" + String(seconds) : String(seconds);
-    return String(minutes) + ":" + secondsText;
+
+    if (hours > 0) {
+      return hours + ":" + String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0");
+    }
+    return minutes + ":" + String(seconds).padStart(2, "0");
+  }
+
+  function showToast(messageText) {
+    const toastElement = document.getElementById("steppy-toast");
+    if (!toastElement) {
+      return;
+    }
+    toastElement.classList.add("show");
+    toastElement.textContent = messageText;
+
+    window.setTimeout(function () {
+      toastElement.classList.remove("show");
+    }, 2200);
   }
 
   function getSelectedDifficulty() {
@@ -33,118 +77,20 @@
   }
 
   function setSelectedDifficulty(difficulty) {
-    window.localStorage.setItem(STEPPY_STORAGE_KEYS.difficulty, difficulty);
+    const cleanedDifficulty = String(difficulty || "").toLowerCase().trim();
+    const finalDifficulty = cleanedDifficulty === "easy" || cleanedDifficulty === "medium" || cleanedDifficulty === "hard"
+      ? cleanedDifficulty
+      : "easy";
+
+    window.localStorage.setItem(STEPPY_STORAGE_KEYS.difficulty, finalDifficulty);
+    updateDifficultyButtons(finalDifficulty);
   }
 
-  function setText(elementId, textValue) {
-    const element = document.getElementById(elementId);
-    if (!element) {
-      return;
-    }
-    element.textContent = textValue;
-  }
-
-  function setBadgeState(elementId, stateText) {
-    const badgeElement = document.getElementById(elementId);
-    if (!badgeElement) {
-      return;
-    }
-
-    const normalizedState = String(stateText || "").toUpperCase();
-    badgeElement.classList.remove("steppy-state-playing", "steppy-state-paused", "steppy-state-loading", "steppy-state-error");
-
-    if (normalizedState === "PLAYING") {
-      badgeElement.classList.add("steppy-state-playing");
-    } else if (normalizedState === "PAUSED") {
-      badgeElement.classList.add("steppy-state-paused");
-    } else if (normalizedState === "LOADING") {
-      badgeElement.classList.add("steppy-state-loading");
-    } else if (normalizedState === "ERROR") {
-      badgeElement.classList.add("steppy-state-error");
-    }
-
-    badgeElement.textContent = normalizedState || "IDLE";
-  }
-
-  function ensureToast() {
-    const toastElement = document.getElementById("steppy-toast");
-    const toastBodyElement = document.getElementById("steppy-toast-body");
-    if (!toastElement || !toastBodyElement) {
-      return null;
-    }
-    return { toastElement, toastBodyElement };
-  }
-
-  function showToast(message) {
-    const toastParts = ensureToast();
-    if (!toastParts) {
-      return;
-    }
-
-    const { toastElement, toastBodyElement } = toastParts;
-    toastBodyElement.textContent = String(message);
-
-    if (!window.bootstrap || !window.bootstrap.Toast) {
-      return;
-    }
-
-    const toastInstance = window.bootstrap.Toast.getOrCreateInstance(toastElement, { delay: 1800 });
-    toastInstance.show();
-  }
-
-  async function fetchJson(url, fetchOptions) {
-    const options = Object.assign(
-      {
-        cache: "no-store",
-        headers: {
-          "Accept": "application/json"
-        }
-      },
-      fetchOptions || {}
-    );
-
-    const response = await fetch(url, options);
-    const contentType = response.headers.get("content-type") || "";
-    if (!contentType.includes("application/json")) {
-      return { ok: false, status: response.status, data: null };
-    }
-
-    const data = await response.json();
-    return { ok: response.ok, status: response.status, data };
-  }
-
-  async function probeBackend() {
-    try {
-      const probeResult = await fetchJson("/api/status");
-      return Boolean(probeResult.ok && probeResult.data && probeResult.data.ok);
-    } catch (error) {
-      return false;
-    }
-  }
-
-  function setBackendStatusText(isAvailable) {
-    const backendStatusText = isAvailable ? "connected" : "not connected";
-    setText("steppy-backend-status", backendStatusText);
-  }
-
-  async function postJson(endpointPath, payloadObject) {
-    const requestBody = payloadObject ? JSON.stringify(payloadObject) : "{}";
-    const result = await fetchJson(endpointPath, {
-      method: "POST",
-      headers: {
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-      },
-      body: requestBody
-    });
-    return Boolean(result.ok && result.data && result.data.ok);
-  }
-
-  function applyDifficultyButtonState(selectedDifficulty) {
+  function updateDifficultyButtons(selectedDifficulty) {
     const difficultyButtons = document.querySelectorAll("[data-steppy-difficulty]");
     difficultyButtons.forEach(function (buttonElement) {
-      const difficultyValue = buttonElement.getAttribute("data-steppy-difficulty");
-      if (difficultyValue === selectedDifficulty) {
+      const buttonDifficulty = String(buttonElement.getAttribute("data-steppy-difficulty") || "");
+      if (buttonDifficulty === selectedDifficulty) {
         buttonElement.classList.remove("btn-outline-secondary");
         buttonElement.classList.add("btn-primary");
       } else {
@@ -156,15 +102,185 @@
     setText("steppy-difficulty", selectedDifficulty);
   }
 
-  function pickBestThumbnailUrl(thumbnails) {
-    if (!Array.isArray(thumbnails) || thumbnails.length === 0) {
-      return "assets/img/bg-img/1.jpg";
+  function uniqueUrlsInOrder(urlList) {
+    const seenUrls = new Set();
+    const uniqueUrls = [];
+    urlList.forEach(function (candidateUrl) {
+      const cleanedUrl = (candidateUrl || "").trim();
+      if (!cleanedUrl) {
+        return;
+      }
+      if (seenUrls.has(cleanedUrl)) {
+        return;
+      }
+      seenUrls.add(cleanedUrl);
+      uniqueUrls.push(cleanedUrl);
+    });
+    return uniqueUrls;
+  }
+
+  function pickThumbnailPlan(videoId, thumbnails) {
+    const candidateUrls = [];
+
+    if (Array.isArray(thumbnails)) {
+      thumbnails.forEach(function (thumb) {
+        if (thumb && typeof thumb.url === "string" && thumb.url) {
+          candidateUrls.push(thumb.url);
+        }
+      });
     }
-    const first = thumbnails[0];
-    if (first && typeof first.url === "string" && first.url) {
-      return first.url;
+
+    const derivedHq = "https://i.ytimg.com/vi/" + encodeURIComponent(videoId) + "/hqdefault.jpg";
+    const derivedMq = "https://i.ytimg.com/vi/" + encodeURIComponent(videoId) + "/mqdefault.jpg";
+    const derivedDefault = "https://i.ytimg.com/vi/" + encodeURIComponent(videoId) + "/default.jpg";
+
+    candidateUrls.push(derivedHq);
+    candidateUrls.push(derivedMq);
+    candidateUrls.push(derivedDefault);
+    candidateUrls.push(LOCAL_FALLBACK_THUMBNAIL_URL);
+
+    const orderedPreferredUrls = [];
+    const orderedOtherUrls = [];
+
+    uniqueUrlsInOrder(candidateUrls).forEach(function (candidateUrl) {
+      const lowerUrl = candidateUrl.toLowerCase();
+      const isPreferred = lowerUrl.includes("hqdefault") || lowerUrl.includes("mqdefault") || lowerUrl.includes("sddefault");
+      const isMaxRes = lowerUrl.includes("maxresdefault") || lowerUrl.includes("maxres");
+      if (isPreferred && !isMaxRes) {
+        orderedPreferredUrls.push(candidateUrl);
+      } else if (!isMaxRes) {
+        orderedOtherUrls.push(candidateUrl);
+      } else {
+        orderedOtherUrls.push(candidateUrl);
+      }
+    });
+
+    const finalUrlList = uniqueUrlsInOrder(orderedPreferredUrls.concat(orderedOtherUrls));
+    const primaryUrl = finalUrlList.length > 0 ? finalUrlList[0] : LOCAL_FALLBACK_THUMBNAIL_URL;
+    const fallbackUrls = finalUrlList.slice(1);
+
+    return { primaryUrl: primaryUrl, fallbackUrls: fallbackUrls };
+  }
+
+  function attachGlobalImageFallbackHandler() {
+    document.addEventListener("error", function (event) {
+      const target = event.target;
+      if (!(target instanceof HTMLImageElement)) {
+        return;
+      }
+
+      const fallbackText = target.getAttribute("data-steppy-thumb-fallbacks") || "";
+      if (!fallbackText) {
+        return;
+      }
+
+      const remainingUrls = fallbackText.split("|").map(function (entry) {
+        return entry.trim();
+      }).filter(Boolean);
+
+      if (remainingUrls.length === 0) {
+        target.removeAttribute("data-steppy-thumb-fallbacks");
+        return;
+      }
+
+      const nextUrl = remainingUrls.shift();
+      target.setAttribute("data-steppy-thumb-fallbacks", remainingUrls.join("|"));
+      target.src = nextUrl;
+    }, true);
+  }
+
+  async function fetchJson(urlPath, fetchOptions) {
+    let response;
+    try {
+      response = await window.fetch(urlPath, fetchOptions || {});
+    } catch (error) {
+      return { ok: false, status: 0, data: null, error: String(error) };
     }
-    return "assets/img/bg-img/1.jpg";
+
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (error) {
+      data = null;
+    }
+
+    return { ok: response.ok, status: response.status, data: data, error: null };
+  }
+
+  async function probeBackend() {
+    const result = await fetchJson("/api/status", { cache: "no-store" });
+    return Boolean(result.ok && result.data && result.data.ok);
+  }
+
+  function setBackendStatusText(backendAvailable) {
+    const badgeElement = document.getElementById("steppy-backend");
+    if (!badgeElement) {
+      return;
+    }
+    badgeElement.textContent = backendAvailable ? "Backend connected" : "Backend not connected";
+    badgeElement.classList.toggle("steppy-bad", !backendAvailable);
+  }
+
+  function setBadgeState(badgeId, stateText) {
+    const badgeElement = document.getElementById(badgeId);
+    if (!badgeElement) {
+      return;
+    }
+
+    const cleanedState = String(stateText || "").toUpperCase();
+    badgeElement.textContent = cleanedState;
+
+    badgeElement.classList.remove("steppy-state-idle", "steppy-state-loading", "steppy-state-playing", "steppy-state-paused", "steppy-state-error");
+
+    if (cleanedState === "PLAYING") {
+      badgeElement.classList.add("steppy-state-playing");
+    } else if (cleanedState === "PAUSED") {
+      badgeElement.classList.add("steppy-state-paused");
+    } else if (cleanedState === "LOADING") {
+      badgeElement.classList.add("steppy-state-loading");
+    } else if (cleanedState === "ERROR") {
+      badgeElement.classList.add("steppy-state-error");
+    } else {
+      badgeElement.classList.add("steppy-state-idle");
+    }
+  }
+
+  function bindCommonHandlers() {
+    const difficultyButtons = document.querySelectorAll("[data-steppy-difficulty]");
+    difficultyButtons.forEach(function (buttonElement) {
+      buttonElement.addEventListener("click", function (event) {
+        event.preventDefault();
+        const difficultyValue = buttonElement.getAttribute("data-steppy-difficulty") || "easy";
+        setSelectedDifficulty(difficultyValue);
+      });
+    });
+
+    updateDifficultyButtons(getSelectedDifficulty());
+  }
+
+  function bindControllerHandlers(backendAvailable) {
+    const controlButtons = document.querySelectorAll("[data-steppy-action]");
+    controlButtons.forEach(function (buttonElement) {
+      buttonElement.addEventListener("click", async function (event) {
+        event.preventDefault();
+        if (!backendAvailable) {
+          showToast("Backend not connected");
+          return;
+        }
+
+        const actionName = String(buttonElement.getAttribute("data-steppy-action") || "");
+        const actionPath = "/api/" + actionName;
+
+        const result = await fetchJson(actionPath, { method: "POST", headers: { "Content-Type": "application/json" }, cache: "no-store" });
+        if (!result.ok || !result.data || !result.data.ok) {
+          showToast("Action failed");
+        }
+      });
+    });
+  }
+
+  function safeText(textValue) {
+    return String(textValue || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
   function renderSearchResults(videoResults) {
@@ -184,42 +300,41 @@
       return;
     }
 
-    videoResults.forEach(function (resultItem) {
-      const videoId = String(resultItem.video_id || "");
-      const titleText = String(resultItem.title || "Untitled");
-      const channelText = String(resultItem.channel_title || "");
-      const durationText = formatElapsedSeconds(Number(resultItem.duration_seconds || 0));
-      const thumbnailUrl = pickBestThumbnailUrl(resultItem.thumbnails);
+    videoResults.forEach(function (item) {
+      const videoId = String(item.video_id || "");
+      if (!videoId) {
+        return;
+      }
 
-      latestSearchResultsById[videoId] = {
-        video_id: videoId,
-        title: titleText,
-        channel_title: channelText,
-        duration_seconds: Number(resultItem.duration_seconds || 0),
-        thumbnail_url: thumbnailUrl
-      };
+      latestSearchResultsById[videoId] = item;
+
+      const titleText = safeText(item.title || "");
+      const channelText = safeText(item.channel_title || "");
+
+      const durationSeconds = Number(item.duration_seconds || 0);
+      const durationText = formatElapsedSeconds(durationSeconds);
+
+      const thumbnailPlan = pickThumbnailPlan(videoId, item.thumbnails);
+      const fallbackData = thumbnailPlan.fallbackUrls.join("|");
 
       const columnElement = document.createElement("div");
       columnElement.className = "col-12";
 
-      const safeTitle = titleText.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-      const safeChannel = channelText.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
       const cardHtml = [
-        '<div class="card steppy-result-card">',
+        '<div class="card steppy-result-card steppy-search-card">',
         '  <div class="card-body">',
         '    <div class="d-flex align-items-center">',
-        '      <div class="card-side-img">',
-        '        <a class="product-thumbnail d-block" href="#" data-steppy-play="' + videoId + '">',
-        '          <img class="steppy-thumb" src="' + thumbnailUrl + '" alt="">',
+        '      <div class="steppy-thumb-box">',
+        '        <a class="d-block" href="#" data-steppy-play="' + videoId + '">',
+        '          <img class="steppy-thumb" loading="lazy" decoding="async" src="' + thumbnailPlan.primaryUrl + '" data-steppy-thumb-fallbacks="' + fallbackData + '" alt="">',
         '        </a>',
         '      </div>',
-        '      <div class="card-content px-3 py-1 w-100">',
-        '        <a class="product-title d-block text-truncate mt-0" href="#" data-steppy-play="' + videoId + '">' + safeTitle + '</a>',
-        '        <div class="small steppy-muted text-truncate">' + safeChannel + '</div>',
+        '      <div class="steppy-result-content flex-grow-1 ms-3">',
+        '        <a class="steppy-result-title d-block text-truncate" href="#" data-steppy-play="' + videoId + '">' + titleText + '</a>',
+        '        <div class="small steppy-muted text-truncate">' + channelText + '</div>',
         '        <div class="d-flex align-items-center justify-content-between mt-2">',
         '          <div class="small steppy-muted">' + durationText + '</div>',
-        '          <button class="btn btn-primary btn-sm steppy-btn" type="button" data-steppy-play="' + videoId + '">Play</button>',
+        '          <button class="btn btn-primary btn-sm" type="button" data-steppy-play="' + videoId + '">Play</button>',
         '        </div>',
         '      </div>',
         '    </div>',
@@ -235,6 +350,8 @@
   function bindSearchHandlers(backendAvailable) {
     const searchForm = document.getElementById("steppy-search-form");
     const searchInput = document.getElementById("steppy-search-input");
+    const clearButton = document.getElementById("steppy-search-clear");
+
     if (!searchForm || !searchInput) {
       return;
     }
@@ -248,6 +365,11 @@
 
     async function runSearch(queryText, pageToken) {
       const trimmedQuery = String(queryText || "").trim();
+      if (!trimmedQuery) {
+        renderSearchResults([]);
+        return;
+      }
+
       if (!backendAvailable) {
         showToast("Backend not connected");
         return;
@@ -255,132 +377,127 @@
 
       window.localStorage.setItem(STEPPY_STORAGE_KEYS.lastSearch, trimmedQuery);
 
-      const localToken = activeSearchToken + 1;
-      activeSearchToken = localToken;
+      const myToken = activeSearchToken + 1;
+      activeSearchToken = myToken;
 
-      const encodedQuery = encodeURIComponent(trimmedQuery);
-      const url = pageToken ? ("/api/search?q=" + encodedQuery + "&page_token=" + encodeURIComponent(pageToken)) : ("/api/search?q=" + encodedQuery);
+      setHtml("steppy-search-status", '<span class="steppy-muted">Searching...</span>');
 
-      const result = await fetchJson(url);
-      if (activeSearchToken !== localToken) {
+      const url = "/api/search?q=" + encodeURIComponent(trimmedQuery) + (pageToken ? "&page_token=" + encodeURIComponent(pageToken) : "");
+      const result = await fetchJson(url, { cache: "no-store" });
+
+      if (activeSearchToken !== myToken) {
         return;
       }
 
       if (!result.ok || !result.data || !result.data.ok) {
-        showToast("Search failed");
+        setHtml("steppy-search-status", '<span class="steppy-muted">Search failed</span>');
         renderSearchResults([]);
         return;
       }
 
-      const responseBlock = result.data.response || {};
-      const items = Array.isArray(responseBlock.items) ? responseBlock.items : [];
+      const response = result.data.response || {};
+      const items = response.items || [];
       renderSearchResults(items);
+
+      const totalResults = Number(response.total_results || 0);
+      const shownCount = Array.isArray(items) ? items.length : 0;
+      if (totalResults > 0) {
+        setHtml("steppy-search-status", '<span class="steppy-muted">Showing ' + shownCount + " of " + totalResults + "</span>");
+      } else {
+        setHtml("steppy-search-status", '<span class="steppy-muted">Showing ' + shownCount + "</span>");
+      }
     }
+
+    let searchDebounceTimer = null;
+
+    function scheduleSearch() {
+      if (searchDebounceTimer) {
+        window.clearTimeout(searchDebounceTimer);
+      }
+      searchDebounceTimer = window.setTimeout(function () {
+        runSearch(searchInput.value, null);
+      }, 250);
+    }
+
+    searchInput.addEventListener("input", function () {
+      scheduleSearch();
+      if (clearButton) {
+        clearButton.classList.toggle("d-none", !searchInput.value);
+      }
+    });
 
     searchForm.addEventListener("submit", function (event) {
       event.preventDefault();
       runSearch(searchInput.value, null);
     });
 
-    if (searchInput.value.trim()) {
-      runSearch(searchInput.value, null);
+    if (clearButton) {
+      clearButton.addEventListener("click", function (event) {
+        event.preventDefault();
+        searchInput.value = "";
+        clearButton.classList.add("d-none");
+        renderSearchResults([]);
+      });
     }
-  }
 
-  function bindPlayClickHandlers(backendAvailable) {
-    document.addEventListener("click", async function (event) {
-      const targetElement = event.target;
-      if (!(targetElement instanceof Element)) {
+    document.body.addEventListener("click", async function (event) {
+      const target = event.target;
+      if (!(target instanceof Element)) {
         return;
       }
 
-      const playElement = targetElement.closest("[data-steppy-play]");
-      if (!playElement) {
+      const playButton = target.closest("[data-steppy-play]");
+      if (!playButton) {
         return;
       }
 
       event.preventDefault();
-
-      const videoId = playElement.getAttribute("data-steppy-play") || "";
-      if (!videoId) {
-        return;
-      }
 
       if (!backendAvailable) {
         showToast("Backend not connected");
         return;
       }
 
+      const videoId = String(playButton.getAttribute("data-steppy-play") || "");
+      if (!videoId) {
+        return;
+      }
+
       const selectedDifficulty = getSelectedDifficulty();
-      const details = latestSearchResultsById[videoId] || null;
-      const playPayload = {
+      const videoData = latestSearchResultsById[videoId] || {};
+      const thumbnailPlan = pickThumbnailPlan(videoId, videoData.thumbnails);
+
+      const payload = {
         video_id: videoId,
         difficulty: selectedDifficulty,
-        video_title: details ? details.title : null,
-        channel_title: details ? details.channel_title : null,
-        duration_seconds: details ? details.duration_seconds : null,
-        thumbnail_url: details ? details.thumbnail_url : null
+        video_title: videoData.title || null,
+        channel_title: videoData.channel_title || null,
+        thumbnail_url: thumbnailPlan.primaryUrl,
+        duration_seconds: videoData.duration_seconds || 0
       };
-      const ok = await postJson("/api/play", playPayload);
-      if (ok) {
-        showToast("Play requested");
-        window.location.href = "controller.html";
-      } else {
+
+      const result = await fetchJson("/api/play", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        cache: "no-store"
+      });
+
+      if (!result.ok || !result.data || !result.data.ok) {
         showToast("Play failed");
+        return;
       }
-    });
-  }
 
-  function bindControllerHandlers(backendAvailable) {
-    applyDifficultyButtonState(getSelectedDifficulty());
-
-    const difficultyButtons = document.querySelectorAll("[data-steppy-difficulty]");
-    difficultyButtons.forEach(function (buttonElement) {
-      buttonElement.addEventListener("click", async function () {
-        const difficultyValue = buttonElement.getAttribute("data-steppy-difficulty");
-        if (!difficultyValue) {
-          return;
-        }
-
-        setSelectedDifficulty(difficultyValue);
-        applyDifficultyButtonState(difficultyValue);
-
-        if (!backendAvailable) {
-          showToast("Backend not connected");
-          return;
-        }
-
-        const ok = await postJson("/api/difficulty", { difficulty: difficultyValue });
-        if (!ok) {
-          showToast("Difficulty update failed");
-        }
-      });
+      window.location.href = "/controller.html";
     });
 
-    const commandButtons = document.querySelectorAll("[data-steppy-command]");
-    commandButtons.forEach(function (buttonElement) {
-      buttonElement.addEventListener("click", async function () {
-        const commandName = buttonElement.getAttribute("data-steppy-command");
-        if (!commandName) {
-          return;
-        }
-
-        if (!backendAvailable) {
-          showToast("Backend not connected");
-          return;
-        }
-
-        const endpoint = "/api/" + encodeURIComponent(commandName);
-        const ok = await postJson(endpoint, null);
-        if (!ok) {
-          showToast("Command failed: " + commandName);
-        }
-      });
-    });
+    if (searchInput.value) {
+      runSearch(searchInput.value, null);
+    }
   }
 
   async function pollStatusOnce() {
-    const result = await fetchJson("/api/status");
+    const result = await fetchJson("/api/status", { cache: "no-store" });
     if (!result.ok || !result.data || !result.data.ok) {
       return null;
     }
@@ -398,14 +515,12 @@
     if (videoId) {
       const shownTitle = videoTitle ? videoTitle : ("Video " + videoId);
       setText("steppy-song-title", shownTitle);
-      if (channelTitle) {
-        setText("steppy-song-meta", channelTitle);
-      } else {
-        setText("steppy-song-meta", "Video id: " + videoId);
-      }
+      setText("steppy-song-channel", channelTitle || "");
+      setText("steppy-video-id", videoId);
     } else {
-      setText("steppy-song-title", "No song selected");
-      setText("steppy-song-meta", "Select a song from Search");
+      setText("steppy-song-title", "Idle");
+      setText("steppy-song-channel", "Select a song from Search");
+      setText("steppy-video-id", "");
     }
 
     setText("steppy-elapsed", formatElapsedSeconds(elapsedSeconds));
@@ -413,29 +528,53 @@
     setBadgeState("steppy-state-badge", stateText);
   }
 
+  function isPageVisible() {
+    return document.visibilityState === "visible";
+  }
+
   async function startStatusLoop() {
-    let backoffMs = 500;
+    if (statusLoopStarted) {
+      return;
+    }
+    statusLoopStarted = true;
+
+    let currentDelayMs = STATUS_POLL_BASE_MS;
 
     async function tick() {
+      if (!isPageVisible()) {
+        currentDelayMs = STATUS_POLL_HIDDEN_MS;
+        window.setTimeout(tick, currentDelayMs);
+        return;
+      }
+
       try {
         const status = await pollStatusOnce();
         if (status) {
           updateControllerFromStatus(status);
-          backoffMs = 500;
+          currentDelayMs = STATUS_POLL_BASE_MS;
         } else {
-          backoffMs = Math.min(4000, Math.floor(backoffMs * 1.5));
+          currentDelayMs = clampNumber(currentDelayMs * 1.6, STATUS_POLL_BASE_MS, STATUS_POLL_MAX_MS);
         }
       } catch (error) {
-        backoffMs = Math.min(4000, Math.floor(backoffMs * 1.5));
+        currentDelayMs = clampNumber(currentDelayMs * 1.6, STATUS_POLL_BASE_MS, STATUS_POLL_MAX_MS);
       }
 
-      window.setTimeout(tick, backoffMs);
+      window.setTimeout(tick, currentDelayMs);
     }
+
+    document.addEventListener("visibilitychange", function () {
+      if (isPageVisible()) {
+        currentDelayMs = STATUS_POLL_BASE_MS;
+      }
+    });
 
     tick();
   }
 
   async function initialize() {
+    attachGlobalImageFallbackHandler();
+    bindCommonHandlers();
+
     const backendAvailable = await probeBackend();
 
     if (getCurrentPage() === "controller") {
@@ -444,18 +583,13 @@
       if (backendAvailable) {
         startStatusLoop();
       }
-    }
-
-    if (getCurrentPage() === "search") {
+    } else if (getCurrentPage() === "search") {
+      setBackendStatusText(backendAvailable);
       bindSearchHandlers(backendAvailable);
     }
-
-    bindPlayClickHandlers(backendAvailable);
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    initialize().catch(function () {
-      showToast("Initialization failed");
-    });
+    initialize();
   });
 })();

@@ -1,0 +1,216 @@
+/* steppy.css
+   Lightweight theme overrides for Affan template.
+   This file is intended to be loaded after style.css.
+*/
+
+:root {
+  --steppy-bg: #050313;
+  --steppy-bg-2: #0a0624;
+  --steppy-card: rgba(10, 7, 30, 0.88);
+  --steppy-border: rgba(255, 255, 255, 0.08);
+
+  --steppy-primary: #5f42ab;
+  --steppy-cyan: #ace4fc;
+  --steppy-pink: #f48ce4;
+  --steppy-magenta: #a4346c;
+
+  --steppy-text: #f3f0fc;
+  --steppy-muted: rgba(243, 240, 252, 0.70);
+}
+
+.steppy-body {
+  background: radial-gradient(1200px 800px at 20% 0%, rgba(95, 66, 171, 0.20), transparent 60%),
+              radial-gradient(900px 700px at 80% 20%, rgba(244, 140, 228, 0.16), transparent 55%),
+              radial-gradient(700px 500px at 60% 100%, rgba(172, 228, 252, 0.10), transparent 60%),
+              linear-gradient(180deg, var(--steppy-bg), var(--steppy-bg-2));
+  color: var(--steppy-text);
+}
+
+.steppy-header .header-content {
+  background: linear-gradient(90deg, rgba(95, 66, 171, 0.35), rgba(244, 140, 228, 0.18));
+  border: 1px solid var(--steppy-border);
+  border-radius: 14px;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.steppy-title {
+  color: var(--steppy-text);
+  letter-spacing: 0.4px;
+  text-shadow: 0 0 10px rgba(172, 228, 252, 0.25);
+}
+
+.steppy-card {
+  background: var(--steppy-card);
+  border: 1px solid var(--steppy-border);
+  border-radius: 14px;
+}
+
+.steppy-muted {
+  color: var(--steppy-muted) !important;
+}
+
+.steppy-section-title {
+  color: var(--steppy-text);
+  text-shadow: 0 0 10px rgba(244, 140, 228, 0.15);
+}
+
+.steppy-alert {
+  background: rgba(95, 66, 171, 0.15);
+  border: 1px solid rgba(172, 228, 252, 0.18);
+  color: var(--steppy-text);
+}
+
+.steppy-stat-box {
+  border: 1px solid var(--steppy-border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.10);
+}
+
+.steppy-badge {
+  background: rgba(255, 255, 255, 0.10);
+  border: 1px solid var(--steppy-border);
+  color: var(--steppy-text);
+  padding: 8px 10px;
+}
+
+.steppy-badge.steppy-state-playing {
+  background: rgba(172, 228, 252, 0.12);
+  border-color: rgba(172, 228, 252, 0.28);
+}
+
+.steppy-badge.steppy-state-paused {
+  background: rgba(244, 140, 228, 0.12);
+  border-color: rgba(244, 140, 228, 0.28);
+}
+
+.steppy-badge.steppy-state-loading {
+  background: rgba(95, 66, 171, 0.16);
+  border-color: rgba(95, 66, 171, 0.30);
+}
+
+.steppy-badge.steppy-state-error {
+  background: rgba(164, 52, 108, 0.16);
+  border-color: rgba(164, 52, 108, 0.35);
+}
+
+.btn.steppy-btn,
+.btn.btn-primary.steppy-btn {
+  background-color: var(--steppy-primary) !important;
+  border-color: rgba(172, 228, 252, 0.15) !important;
+  box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+}
+
+.btn.steppy-btn:hover,
+.btn.btn-primary.steppy-btn:hover {
+  filter: brightness(1.05);
+  box-shadow: 0 0 18px rgba(172, 228, 252, 0.10);
+}
+
+.steppy-btn-outline {
+  border-color: rgba(172, 228, 252, 0.35) !important;
+  color: var(--steppy-text) !important;
+  background: rgba(0, 0, 0, 0.10) !important;
+}
+
+.steppy-btn-outline:hover {
+  background: rgba(172, 228, 252, 0.08) !important;
+}
+
+.steppy-input-icon {
+  background: rgba(0, 0, 0, 0.20) !important;
+  border-color: var(--steppy-border) !important;
+  color: var(--steppy-text) !important;
+}
+
+.steppy-input {
+  background: rgba(0, 0, 0, 0.20) !important;
+  border-color: var(--steppy-border) !important;
+  color: var(--steppy-text) !important;
+}
+
+.steppy-input:focus {
+  border-color: rgba(172, 228, 252, 0.40) !important;
+  box-shadow: 0 0 0 0.2rem rgba(172, 228, 252, 0.12) !important;
+}
+
+.steppy-footer .footer-nav {
+  background: rgba(10, 7, 30, 0.90);
+  border-top: 1px solid var(--steppy-border);
+}
+
+.steppy-footer .footer-nav ul li.active a {
+  color: var(--steppy-cyan) !important;
+  text-shadow: 0 0 10px rgba(172, 228, 252, 0.25);
+}
+
+.steppy-footer .footer-nav ul li a:hover {
+  color: var(--steppy-pink) !important;
+}
+
+.steppy-toast {
+  background: linear-gradient(90deg, rgba(95, 66, 171, 0.85), rgba(244, 140, 228, 0.50)) !important;
+  color: var(--steppy-text) !important;
+  border: 1px solid rgba(255, 255, 255, 0.10) !important;
+}
+
+.steppy-song-title {
+  color: var(--steppy-text) !important;
+  text-shadow: 0 0 12px rgba(172, 228, 252, 0.12);
+}
+
+.steppy-bad {
+  color: rgba(244, 140, 228, 0.90);
+}
+
+.steppy-result-card {
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--steppy-border);
+  border-radius: 14px;
+}
+
+.steppy-thumb {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+
+/* Search results layout fixes */
+
+.steppy-search-card .card-body {
+  padding: 14px;
+}
+
+.steppy-thumb-box {
+  width: 128px;
+  height: 72px;
+  flex: 0 0 auto;
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.steppy-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.steppy-result-title {
+  color: var(--steppy-cyan);
+  text-decoration: none;
+}
+
+.steppy-result-title:hover {
+  color: var(--steppy-pink);
+}
+
+@media (max-width: 420px) {
+  .steppy-thumb-box {
+    width: 104px;
+    height: 58px;
+  }
+}
+

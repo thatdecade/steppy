@@ -51,7 +51,7 @@
         <i class="ti ti-plug-connected me-2"></i>
         <div>
           <span class="fw-semibold">Backend</span>
-          <span class="ms-2" id="steppy-backend-status">checking</span>
+          <span class="ms-2" id="steppy-backend">Backend checking</span>
         </div>
       </div>
 
@@ -60,7 +60,8 @@
           <div class="d-flex align-items-start justify-content-between">
             <div class="flex-grow-1">
               <h6 class="mb-1 steppy-song-title" id="steppy-song-title">No song selected</h6>
-              <p class="mb-2 small steppy-muted" id="steppy-song-meta">Select a song from Search</p>
+              <p class="mb-2 small steppy-muted" id="steppy-song-channel">Select a song from Search</p>
+              <span class="d-none" id="steppy-video-id"></span>
             </div>
             <span class="badge steppy-badge" id="steppy-state-badge">IDLE</span>
           </div>
@@ -89,22 +90,22 @@
 
           <div class="row g-2">
             <div class="col-6">
-              <button class="btn btn-primary w-100 steppy-btn" type="button" data-steppy-command="pause">
+              <button class="btn btn-primary w-100 steppy-btn" type="button" data-steppy-action="pause">
                 Pause <i class="ti ti-player-pause ms-1"></i>
               </button>
             </div>
             <div class="col-6">
-              <button class="btn btn-success w-100 steppy-btn" type="button" data-steppy-command="resume">
+              <button class="btn btn-success w-100 steppy-btn" type="button" data-steppy-action="resume">
                 Resume <i class="ti ti-player-play ms-1"></i>
               </button>
             </div>
             <div class="col-6">
-              <button class="btn btn-warning w-100 steppy-btn" type="button" data-steppy-command="restart">
+              <button class="btn btn-warning w-100 steppy-btn" type="button" data-steppy-action="restart">
                 Restart <i class="ti ti-refresh ms-1"></i>
               </button>
             </div>
             <div class="col-6">
-              <button class="btn btn-danger w-100 steppy-btn" type="button" data-steppy-command="stop">
+              <button class="btn btn-danger w-100 steppy-btn" type="button" data-steppy-action="stop">
                 Stop <i class="ti ti-x ms-1"></i>
               </button>
             </div>

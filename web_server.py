@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from flask import Flask, Response, abort, jsonify, make_response, request, send_file
+from flask import Flask, Response, jsonify, make_response, request, send_file
 
 from youtube_api import YouTubeApi, YouTubeApiError
 
@@ -208,15 +208,20 @@ def create_flask_app(config: WebServerConfig) -> Flask:
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    def not_found_response() -> Response:
+        response = make_response("Not Found", 404)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     def serve_file_from_web_root(relative_path: str) -> Response:
         normalized_relative_path = relative_path.lstrip("/")
         candidate_path = config.web_root_dir / normalized_relative_path
 
         if not _is_within_directory(config.web_root_dir, candidate_path):
-            abort(404)
+            return not_found_response()
 
         if not candidate_path.exists() or not candidate_path.is_file():
-            abort(404)
+            return not_found_response()
 
         mime_type = _guess_mime_type(candidate_path)
         return make_response(send_file(candidate_path, mimetype=mime_type))
@@ -255,7 +260,7 @@ def create_flask_app(config: WebServerConfig) -> Flask:
 
     @flask_app.get("/manifest.json")
     def route_disable_manifest() -> Response:
-        abort(404)
+        return not_found_response()
 
     # -------------------------
     # Pages
@@ -412,7 +417,7 @@ def main() -> None:
         port=config.port,
         debug=config.debug,
         use_reloader=False,
-        threaded=True,
+        threaded=False,
     )
 
 
