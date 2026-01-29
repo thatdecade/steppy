@@ -58,6 +58,7 @@ class VideoDetails:
     duration_seconds: int
     channel_title: Optional[str]
     published_at: Optional[str]
+    thumbnail_url: Optional[str]
     thumbnails: List[Thumbnail]
 
 
@@ -298,6 +299,14 @@ def _extract_thumbnails(snippet: Dict[str, Any]) -> List[Thumbnail]:
         )
 
     return thumbnails
+
+
+def _pick_best_thumbnail_url(thumbnails: List[Thumbnail]) -> Optional[str]:
+    for thumbnail in thumbnails:
+        url_text = (thumbnail.url or "").strip()
+        if url_text:
+            return url_text
+    return None
 
 
 def _raise_for_http_error(http_error: HttpError) -> None:
@@ -625,6 +634,7 @@ class YouTubeApi:
                 duration_seconds = parse_youtube_duration_seconds(str(duration_value) if duration_value else "")
 
                 thumbnails = _extract_thumbnails(snippet)
+                thumbnail_url = _pick_best_thumbnail_url(thumbnails)
 
                 results.append(
                     VideoDetails(
@@ -633,6 +643,7 @@ class YouTubeApi:
                         duration_seconds=duration_seconds,
                         channel_title=channel_title_text,
                         published_at=published_at_text,
+                        thumbnail_url=thumbnail_url,
                         thumbnails=thumbnails,
                     )
                 )
@@ -756,6 +767,11 @@ class YouTubeApi:
             published_at_value = payload.get("published_at")
             published_at = str(published_at_value) if isinstance(published_at_value, str) else None
 
+            thumbnail_url_value = payload.get("thumbnail_url")
+            thumbnail_url = str(thumbnail_url_value).strip() if isinstance(thumbnail_url_value, str) else None
+            if thumbnail_url == "":
+                thumbnail_url = None
+
             thumbnails_payload = payload.get("thumbnails") or []
             thumbnails: List[Thumbnail] = []
             if isinstance(thumbnails_payload, list):
@@ -775,12 +791,16 @@ class YouTubeApi:
                         )
                     )
 
+            if thumbnail_url is None:
+                thumbnail_url = _pick_best_thumbnail_url(thumbnails)
+
             return VideoDetails(
                 video_id=video_id,
                 title=title,
                 duration_seconds=max(0, duration_seconds),
                 channel_title=channel_title,
                 published_at=published_at,
+                thumbnail_url=thumbnail_url,
                 thumbnails=thumbnails,
             )
         except Exception:

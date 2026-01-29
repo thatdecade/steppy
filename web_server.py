@@ -1,3 +1,4 @@
+# web_server.py
 from __future__ import annotations
 
 import argparse
@@ -10,6 +11,7 @@ from typing import Any, Optional
 
 from flask import Flask, Response, jsonify, make_response, request, send_file, redirect
 
+from thumb_cache import ThumbCache, ThumbCacheError, ThumbCacheUrlNotAllowedError
 from youtube_api import YouTubeApi, YouTubeApiError
 
 
@@ -174,6 +176,7 @@ def create_flask_app(config: WebServerConfig) -> Flask:
     flask_app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
     session_state = SessionState()
+    thumb_cache = ThumbCache()
 
     youtube_api_lock = threading.Lock()
     youtube_api_instance: Optional[YouTubeApi] = None
@@ -205,6 +208,9 @@ def create_flask_app(config: WebServerConfig) -> Flask:
 
     @flask_app.after_request
     def add_no_cache_headers(response: Response) -> Response:
+        # Keep the app UI un-cached, but allow thumbnail responses to be cacheable.
+        if request.path.startswith("/thumb"):
+            return response
         response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -225,6 +231,40 @@ def create_flask_app(config: WebServerConfig) -> Flask:
 
         mime_type = _guess_mime_type(candidate_path)
         return make_response(send_file(candidate_path, mimetype=mime_type))
+
+    def _maybe_wrap_thumbnail_url(value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        cleaned = value.strip()
+        if not cleaned:
+            return value
+        if cleaned.startswith("/thumb?url="):
+            return cleaned
+        return thumb_cache.make_local_url(cleaned, route_path="/thumb")
+
+    def _rewrite_thumbnail_urls_in_search_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        response_block = payload.get("response")
+        if not isinstance(response_block, dict):
+            return payload
+
+        items = response_block.get("items")
+        if not isinstance(items, list):
+            return payload
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+
+            item["thumbnail_url"] = _maybe_wrap_thumbnail_url(item.get("thumbnail_url"))
+
+            thumbnails = item.get("thumbnails")
+            if isinstance(thumbnails, list):
+                for thumbnail_entry in thumbnails:
+                    if not isinstance(thumbnail_entry, dict):
+                        continue
+                    thumbnail_entry["url"] = _maybe_wrap_thumbnail_url(thumbnail_entry.get("url"))
+
+        return payload
 
     # -------------------------
     # PWA disable routes
@@ -263,16 +303,43 @@ def create_flask_app(config: WebServerConfig) -> Flask:
         return not_found_response()
 
     # -------------------------
+    # Thumbnail route
+    # -------------------------
+
+    @flask_app.get("/thumb")
+    def route_thumb() -> Response:
+        source_url = (request.args.get("url") or "").strip()
+        if not source_url:
+            return not_found_response()
+
+        try:
+            cached_thumbnail = thumb_cache.get_or_fetch(source_url)
+        except ThumbCacheUrlNotAllowedError:
+            return not_found_response()
+        except ThumbCacheError:
+            return not_found_response()
+
+        response = make_response(
+            send_file(
+                cached_thumbnail.file_path,
+                mimetype=cached_thumbnail.content_type or None,
+                conditional=True,
+            )
+        )
+        response.headers["Cache-Control"] = "public, max-age=86400"
+        return response
+
+    # -------------------------
     # Pages
     # -------------------------
 
     @flask_app.get("/")
     def route_root() -> Response:
-        return redirect('/controller.html')
+        return redirect("/controller.html")
 
     @flask_app.get("/index.html")
     def route_index_html() -> Response:
-        return redirect('/controller.html')
+        return redirect("/controller.html")
 
     @flask_app.get("/controller")
     def route_controller() -> Response:
@@ -309,7 +376,9 @@ def create_flask_app(config: WebServerConfig) -> Flask:
 
         try:
             response = youtube_api.search_videos(query_text, page_token=page_token, max_results=20)
-            return jsonify({"ok": True, "response": _serialize_dataclass(response)})
+            payload = {"ok": True, "response": _serialize_dataclass(response)}
+            payload = _rewrite_thumbnail_urls_in_search_payload(payload)
+            return jsonify(payload)
         except YouTubeApiError as exception:
             return jsonify({"ok": False, "error": str(exception)}), 502
         except Exception as exception:

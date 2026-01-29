@@ -23,9 +23,11 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="config.py" />
+    <Compile Include="control_api.py" />
     <Compile Include="main_window.py" />
     <Compile Include="qr_code.py" />
     <Compile Include="steppy.py" />
+    <Compile Include="thumb_cache.py" />
     <Compile Include="web_player_bridge.py" />
     <Compile Include="web_server.py" />
     <Compile Include="youtube_api.py" />
