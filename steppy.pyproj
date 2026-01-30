@@ -28,6 +28,7 @@
     <Compile Include="chart_models.py" />
     <Compile Include="config.py" />
     <Compile Include="control_api.py" />
+    <Compile Include="demo_controls.py" />
     <Compile Include="gameplay_harness.py" />
     <Compile Include="gameplay_models.py" />
     <Compile Include="game_clock.py" />

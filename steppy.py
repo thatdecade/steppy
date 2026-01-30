@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from PyQt6.QtWidgets import QApplication
 
@@ -66,19 +64,17 @@ def main() -> int:
     if parsed_args.fullscreen:
         main_window.showFullScreen()
 
-    if parsed_args.demo:
-        return int(qt_application.exec())
-
-    web_root_dir = _resolve_web_root_dir()
-
-    control_bridge = ControlApiBridge(
-        bind_host=str(app_config.web_server.host),
-        bind_port=int(app_config.web_server.port),
-        web_root_dir=web_root_dir,
-        debug=bool(parsed_args.web_debug),
-        poll_interval_ms=int(parsed_args.poll_interval_ms),
-        parent=main_window,
-    )
+    control_bridge = None
+    if not parsed_args.demo:
+        web_root_dir = _resolve_web_root_dir()
+        control_bridge = ControlApiBridge(
+            bind_host=str(app_config.web_server.host),
+            bind_port=int(app_config.web_server.port),
+            web_root_dir=web_root_dir,
+            debug=bool(parsed_args.web_debug),
+            poll_interval_ms=int(parsed_args.poll_interval_ms),
+            parent=main_window,
+        )
 
     controller = AppController(main_window=main_window, control_bridge=control_bridge)
     controller.start()

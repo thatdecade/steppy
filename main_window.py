@@ -1,31 +1,24 @@
-"""
+"""\
 main_window.py
 
 Single window UI surface for idle, playback, and overlay.
 
 Integration
-
-* Loads UI from main_window_ui.py generated from main_window_ui.ui
-* Hosts embedded web video player
-* Hosts idle overlay (splash and QR card) above everything when idle
-* Provides non-interactive fullscreen kiosk behavior
-
-TODO (pending integration with other modules)
-
-* Wire overlay renderer into the dedicated overlay layer (currently an empty transparent widget).
-* Make kiosk mode truly non-interactive and locked down (disable menu/actions, suppress escape keys, and handle platform exit routes as needed).
-* Fix standalone demo playback clock so it actually toggles out of idle and drives visible layout testing output.
+- Loads UI from main_window_ui.py generated from main_window_ui.ui
+- Hosts embedded web video player
+- Hosts idle overlay (splash and QR card)
+- Hosts gameplay overlay as a QWidget layer
+- Supports a local demo mode (spacebar toggles IDLE <-> DEMO)
 
 Public API
-
-* show_idle(), hide_idle()
-* set_idle_qr(image)
-* load_video(video_id), play(), pause(), seek(seconds)
+- show_idle(), hide_idle()
+- set_idle_qr(image)
+- load_video(video_id), cue_video(video_id), play(), pause(), seek(seconds)
+- set_gameplay_overlay_widget(widget)
+- set_demo_controls_widget(widget), set_demo_controls_visible(bool)
 
 Standalone usage
 python -m main_window
-
-No command line arguments are required or used.
 """
 
 from __future__ import annotations
@@ -34,7 +27,7 @@ import sys
 from dataclasses import dataclass
 from typing import Optional
 
-from PyQt6.QtCore import QEvent, QPoint, QRect, QTimer, Qt, QUrl
+from PyQt6.QtCore import QEvent, QPoint, QRect, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QImage, QKeyEvent, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -47,10 +40,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from config import get_config, open_config_json_in_editor
 from main_window_ui import Ui_MainWindow
 from web_player_bridge import WebPlayerBridge
-
-from config import get_config, open_config_json_in_editor
 
 import qr_code
 
@@ -76,6 +68,8 @@ class _DemoState:
 
 
 class MainWindow(QMainWindow):
+    demoModeChanged = pyqtSignal(bool)
+
     def __init__(self, *, kiosk_mode: bool = False, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
 
@@ -85,6 +79,7 @@ class MainWindow(QMainWindow):
         self._kiosk_mode = bool(kiosk_mode)
         self._apply_kiosk_settings(self._kiosk_mode)
 
+        # Host for the video surface plus overlay layers.
         self._layers_host = QWidget(self.ui.centralwidget)
         self._layers_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -92,22 +87,44 @@ class MainWindow(QMainWindow):
         layers_layout.setContentsMargins(0, 0, 0, 0)
         layers_layout.setSpacing(0)
 
+        # splashFrame is provided by the .ui file.
         self.ui.splashFrame.setParent(self._layers_host)
 
-        self._web_player = WebPlayerBridge(self._layers_host)
-        self._web_player.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.web_player = WebPlayerBridge(self._layers_host)
+        self.web_player.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self._overlay_layer = QWidget(self._layers_host)
         self._overlay_layer.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._overlay_layer.setStyleSheet("background: transparent;")
         self._overlay_layer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        layers_layout.addWidget(self._web_player, 0, 0)
+        self._overlay_layout = QGridLayout(self._overlay_layer)
+        self._overlay_layout.setContentsMargins(0, 0, 0, 0)
+        self._overlay_layout.setSpacing(0)
+
+        self._gameplay_overlay_widget: Optional[QWidget] = None
+
+        layers_layout.addWidget(self.web_player, 0, 0)
         layers_layout.addWidget(self._overlay_layer, 0, 0)
         layers_layout.addWidget(self.ui.splashFrame, 0, 0)
 
+        # Root layout from the .ui file.
         if hasattr(self.ui, "rootLayout") and self.ui.rootLayout is not None:
-            self.ui.rootLayout.addWidget(self._layers_host)
+            self.ui.rootLayout.addWidget(self._layers_host, 1)
+
+        # Demo controls host goes under the video surface.
+        self._demo_controls_host = QWidget(self.ui.centralwidget)
+        self._demo_controls_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._demo_controls_host_layout = QVBoxLayout(self._demo_controls_host)
+        self._demo_controls_host_layout.setContentsMargins(0, 0, 0, 0)
+        self._demo_controls_host_layout.setSpacing(0)
+        self._demo_controls_widget: Optional[QWidget] = None
+        self._demo_controls_host.hide()
+
+        if hasattr(self.ui, "rootLayout") and self.ui.rootLayout is not None:
+            self.ui.rootLayout.addWidget(self._demo_controls_host, 0)
+
+        self._demo_mode_enabled = False
 
         self._idle_qr_card: Optional[QFrame] = None
         self._idle_qr_label: Optional[QLabel] = None
@@ -123,7 +140,6 @@ class MainWindow(QMainWindow):
         self.ui.actionFull_Screen.triggered.connect(self.on_action_fullscreen_toggle)
         self.ui.actionExit.triggered.connect(self.on_action_exit)
 
-        # If config load fails, let it raise. You asked for hard failures.
         app_config, _config_path = get_config()
 
         control_url, control_qimage = qr_code.generate_control_qr_qimage(
@@ -135,8 +151,90 @@ class MainWindow(QMainWindow):
         self._set_idle_url_hint(control_url)
         self.set_idle_qr(control_qimage)
 
+        self.setMinimumSize(0, 0)
         self.show_idle()
-        self._set_status_text("IDLE  |  F11 fullscreen  |  press space to test ")
+        self._set_status_text("IDLE  |  F11 fullscreen  |  press space for demo")
+
+    # -------------------------
+    # Public helpers for controller
+    # -------------------------
+
+    @property
+    def web_player_bridge(self) -> WebPlayerBridge:
+        return self.web_player
+
+    def set_gameplay_overlay_widget(self, overlay_widget: Optional[QWidget]) -> None:
+        if self._gameplay_overlay_widget is overlay_widget:
+            return
+
+        if self._gameplay_overlay_widget is not None:
+            try:
+                self._overlay_layout.removeWidget(self._gameplay_overlay_widget)
+            except Exception:
+                pass
+            self._gameplay_overlay_widget.setParent(None)
+            self._gameplay_overlay_widget.deleteLater()
+
+        self._gameplay_overlay_widget = overlay_widget
+        if overlay_widget is None:
+            return
+
+        overlay_widget.setParent(self._overlay_layer)
+        overlay_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._overlay_layout.addWidget(overlay_widget, 0, 0)
+        overlay_widget.show()
+
+    def set_demo_controls_widget(self, demo_widget: Optional[QWidget]) -> None:
+        if self._demo_controls_widget is demo_widget:
+            return
+
+        if self._demo_controls_widget is not None:
+            old = self._demo_controls_widget
+            try:
+                self._demo_controls_host_layout.removeWidget(old)
+            except Exception:
+                pass
+            old.setParent(None)
+            old.deleteLater()
+
+        self._demo_controls_widget = demo_widget
+        if demo_widget is None:
+            return
+
+        demo_widget.setParent(self._demo_controls_host)
+        demo_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._demo_controls_host_layout.addWidget(demo_widget)
+        demo_widget.show()
+
+    def set_demo_controls_visible(self, visible: bool) -> None:
+        if bool(visible):
+            self._demo_controls_host.show()
+            self._demo_controls_host.raise_()
+        else:
+            self._demo_controls_host.hide()
+
+    # -------------------------
+    # Playback facade
+    # -------------------------
+
+    def load_video(self, video_id: str) -> None:
+        self.web_player.load_video(video_id, start_seconds=0.0, autoplay=True)
+
+    def cue_video(self, video_id: str) -> None:
+        self.web_player.load_video(video_id, start_seconds=0.0, autoplay=False)
+
+    def play(self) -> None:
+        self.web_player.play()
+
+    def pause(self) -> None:
+        self.web_player.pause()
+
+    def seek(self, seconds: float) -> None:
+        self.web_player.seek(float(seconds))
+
+    # -------------------------
+    # Menu actions
+    # -------------------------
 
     def on_action_fullscreen_toggle(self):
         if self.isFullScreen():
@@ -152,6 +250,10 @@ class MainWindow(QMainWindow):
 
     def on_action_exit(self) -> None:
         self.close()
+
+    # -------------------------
+    # Idle overlay controls
+    # -------------------------
 
     def show_idle(self) -> None:
         self.ui.splashFrame.show()
@@ -182,18 +284,6 @@ class MainWindow(QMainWindow):
         )
         self._idle_qr_label.setPixmap(scaled)
         self._idle_qr_label.setText("")
-
-    def load_video(self, video_id: str) -> None:
-        self._web_player.load_video(video_id, start_seconds=0.0, autoplay=True)
-
-    def play(self) -> None:
-        self._web_player.play()
-
-    def pause(self) -> None:
-        self._web_player.pause()
-
-    def seek(self, seconds: float) -> None:
-        self._web_player.seek(float(seconds))
 
     def _apply_kiosk_settings(self, enabled: bool) -> None:
         if enabled:
@@ -232,8 +322,6 @@ class MainWindow(QMainWindow):
         splash_image_label.setScaledContents(True)
         splash_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # Capture click/hover events on the full splash surface. The QR card remains transparent
-        # to mouse events, but we can still treat the URL region as clickable via event filtering.
         splash_image_label.setMouseTracking(True)
         splash_image_label.installEventFilter(self)
 
@@ -293,6 +381,7 @@ class MainWindow(QMainWindow):
 
         debug_label = QLabel("", splash_frame)
         debug_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        debug_label.setWordWrap(True)
         debug_label.setStyleSheet(
             "background: rgba(5, 3, 19, 160);"
             f"color: {THEME_CYAN};"
@@ -346,8 +435,6 @@ class MainWindow(QMainWindow):
         return QRect(top_left_global, self._idle_url_hint_label.size())
 
     def eventFilter(self, watched, event) -> bool:
-        # The QR card is transparent for mouse events, so clicks land on splashImageLabel.
-        # We capture those and treat the URL label region as clickable.
         if watched is self.ui.splashImageLabel and self.ui.splashFrame.isVisible():
             url_rect_global = self._idle_url_rect_global()
 
@@ -401,7 +488,10 @@ class MainWindow(QMainWindow):
 
         if self._status_label is not None:
             debug_label = self._status_label
-            debug_size = debug_label.sizeHint()
+            max_debug_width = int(max(240, frame_width - IDLE_DEBUG_MARGIN_LEFT_PX - 24))
+            debug_label.setMaximumWidth(max_debug_width)
+            debug_label.adjustSize()
+            debug_size = debug_label.size()
             debug_width = max(1, debug_size.width())
             debug_height = max(1, debug_size.height())
             debug_label.setGeometry(IDLE_DEBUG_MARGIN_LEFT_PX, IDLE_DEBUG_MARGIN_TOP_PX, debug_width, debug_height)
@@ -418,26 +508,39 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self._position_idle_overlays()
 
+    # -------------------------
+    # Key handling
+    # -------------------------
+
     def keyPressEvent(self, event: Optional[QKeyEvent]) -> None:
         if event is None:
             return
 
         if event.key() == Qt.Key.Key_Space:
-            if self.ui.splashFrame.isVisible():
+            self._demo_mode_enabled = not self._demo_mode_enabled
+            if self._demo_mode_enabled:
                 self.hide_idle()
-                self._set_status_text("PLAYING (demo layout only)")
+                self.set_demo_controls_visible(True)
+                self.demoModeChanged.emit(True)
+                self._set_status_text("DEMO  |  space toggles  |  F11 fullscreen  |  Esc exits fullscreen")
             else:
+                self.set_demo_controls_visible(False)
                 self.show_idle()
-                self._set_status_text("IDLE  |  space toggles  |  F11 fullscreen  |  Esc quit")
+                self.demoModeChanged.emit(False)
+                self._set_status_text("IDLE  |  F11 fullscreen  |  press space for demo")
+            event.accept()
             return
 
         if event.key() == Qt.Key.Key_Escape:
             if self.isFullScreen():
                 self.showNormal()
-            return
+                event.accept()
+                return
 
         if event.key() == Qt.Key.Key_F11:
             self.on_action_fullscreen_toggle()
+            event.accept()
+            return
 
         super().keyPressEvent(event)
 
@@ -451,6 +554,9 @@ def main() -> int:
     window.show()
 
     demo_state = _DemoState(is_idle=True, fake_time_seconds=0.0)
+
+    # This demo loop is intentionally minimal. AppController owns the real tick timers.
+    from PyQt6.QtCore import QTimer
 
     tick_timer = QTimer(window)
     tick_timer.setInterval(100)
