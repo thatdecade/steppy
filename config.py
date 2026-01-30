@@ -1,4 +1,4 @@
-"""\
+"""
 config.py
 
 Typed configuration loading and validation for Steppy.
@@ -41,11 +41,6 @@ Example config file (steppy_config.json)
     "playlist_id": "",
     "mute": true
   },
-  "theme": {
-    "themes_root_dir": "Themes",
-    "theme_name": "SteppyDefault",
-    "fallback_theme_name": "_fallback"
-  }
 }
 """
 
@@ -97,32 +92,12 @@ class WebServerConfig(BaseModel):
 class AttractConfig(BaseModel):
     playlist_id: str = Field(default="", description="Optional YouTube playlist id for attract mode.")
     mute: bool = Field(default=True, description="Mute attract playback.")
-
-
-class ThemeConfig(BaseModel):
-    themes_root_dir: str = Field(
-        default="Themes",
-        description=(
-            "Directory containing StepMania-style theme folders (for example: Themes/Simply-Love).")
-    )
-    theme_name: str = Field(default="SteppyDefault", description="Theme folder name to load.")
-    fallback_theme_name: str = Field(
-        default="_fallback",
-        description="Fallback theme folder name used when theme_name is missing or incomplete.",
-    )
-
-    @field_validator("themes_root_dir", "theme_name", "fallback_theme_name")
-    @classmethod
-    def strip_strings(cls, value: str) -> str:
-        return (value or "").strip()
-
+    
 
 class AppConfig(BaseModel):
     youtube: YouTubeConfig = Field(default_factory=YouTubeConfig)
     web_server: WebServerConfig = Field(default_factory=WebServerConfig)
     attract: AttractConfig = Field(default_factory=AttractConfig)
-    theme: ThemeConfig = Field(default_factory=ThemeConfig)
-
 
 def _default_config_candidates() -> List[Path]:
     config_directory = Path(user_config_dir("Steppy", "Steppy"))
@@ -149,21 +124,10 @@ def _resolve_config_path() -> Path:
 
 
 def _read_json_file_utf8(config_path: Path) -> Dict[str, Any]:
-    try:
-        raw_text = config_path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        raise
-    except OSError as exception:
-        raise OSError(f"Failed to read config file: {config_path}. Error: {exception}") from exception
-
-    try:
-        parsed = json.loads(raw_text)
-    except json.JSONDecodeError as exception:
-        raise ValueError(f"Config file is not valid JSON: {config_path}. Error: {exception}") from exception
-
+    raw_text = config_path.read_text(encoding="utf-8")
+    parsed = json.loads(raw_text)
     if not isinstance(parsed, dict):
         raise ValueError(f"Config file root must be a JSON object: {config_path}")
-
     return parsed
 
 
@@ -177,29 +141,28 @@ def _apply_environment_overrides(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     - STEPPY_YOUTUBE_SAFE_SEARCH
     - STEPPY_YOUTUBE_REQUIRE_EMBEDDABLE
     - STEPPY_YOUTUBE_CACHE_TTL_SECONDS
+
     - STEPPY_WEB_HOST
     - STEPPY_WEB_PORT
+
     - STEPPY_ATTRACT_PLAYLIST_ID
     - STEPPY_ATTRACT_MUTE
-    - STEPPY_THEMES_ROOT_DIR
-    - STEPPY_THEME_NAME
-    - STEPPY_FALLBACK_THEME_NAME
+
     """
 
     def ensure_nested(config_root: Dict[str, Any], section_name: str) -> Dict[str, Any]:
         section = config_root.get(section_name)
         if isinstance(section, dict):
             return section
-        section = {}
-        config_root[section_name] = section
-        return section
+        created_section: Dict[str, Any] = {}
+        config_root[section_name] = created_section
+        return created_section
 
-    updated_config = dict(config_dict)
+    updated_config: Dict[str, Any] = dict(config_dict)
 
     youtube_section = ensure_nested(updated_config, "youtube")
     web_server_section = ensure_nested(updated_config, "web_server")
     attract_section = ensure_nested(updated_config, "attract")
-    theme_section = ensure_nested(updated_config, "theme")
 
     def override_string(env_name: str, target_dict: Dict[str, Any], key_name: str) -> None:
         value_text = os.environ.get(env_name, "")
@@ -238,11 +201,7 @@ def _apply_environment_overrides(config_dict: Dict[str, Any]) -> Dict[str, Any]:
 
     override_string("STEPPY_ATTRACT_PLAYLIST_ID", attract_section, "playlist_id")
     override_bool("STEPPY_ATTRACT_MUTE", attract_section, "mute")
-
-    override_string("STEPPY_THEMES_ROOT_DIR", theme_section, "themes_root_dir")
-    override_string("STEPPY_THEME_NAME", theme_section, "theme_name")
-    override_string("STEPPY_FALLBACK_THEME_NAME", theme_section, "fallback_theme_name")
-
+    
     return updated_config
 
 

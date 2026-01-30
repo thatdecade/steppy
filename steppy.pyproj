@@ -28,6 +28,7 @@
     <Compile Include="gameplay_harness.py" />
     <Compile Include="gameplay_models.py" />
     <Compile Include="game_clock.py" />
+    <Compile Include="graphics_pack.py" />
     <Compile Include="input_router.py" />
     <Compile Include="judge.py" />
     <Compile Include="main_window.py" />
@@ -36,7 +37,6 @@
     <Compile Include="qr_code.py" />
     <Compile Include="steppy.py" />
     <Compile Include="test_chart.py" />
-    <Compile Include="theme.py" />
     <Compile Include="thumb_cache.py" />
     <Compile Include="timing_model.py" />
     <Compile Include="web_player_bridge.py" />

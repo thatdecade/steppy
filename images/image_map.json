@@ -1,0 +1,677 @@
+{
+  "meta": {
+    "source_noteskin": "ddr-rainbow",
+    "generated_utc": "2026-01-29T20:32:11Z",
+    "prompt": "https://chatgpt.com/share/697c1862-a60c-800d-95cb-99a25af1b26f",
+    "directions": [
+      "Down",
+      "Left",
+      "Up",
+      "Right",
+      "UpLeft",
+      "UpRight"
+    ],
+    "note_color_variants": 16,
+    "notes": "Pre-rendered assets extracted from StepMania noteskin. Rotation baked per direction."
+  },
+  "elements": {
+    "receptor": {
+      "animation_clock": "beat",
+      "frames": {
+        "Down": [
+          {
+            "file": "receptor/down/frame_0.png",
+            "duration_beats": 0.2
+          },
+          {
+            "file": "receptor/down/frame_1.png",
+            "duration_beats": 0.8
+          }
+        ],
+        "Left": [
+          {
+            "file": "receptor/left/frame_0.png",
+            "duration_beats": 0.2
+          },
+          {
+            "file": "receptor/left/frame_1.png",
+            "duration_beats": 0.8
+          }
+        ],
+        "Up": [
+          {
+            "file": "receptor/up/frame_0.png",
+            "duration_beats": 0.2
+          },
+          {
+            "file": "receptor/up/frame_1.png",
+            "duration_beats": 0.8
+          }
+        ],
+        "Right": [
+          {
+            "file": "receptor/right/frame_0.png",
+            "duration_beats": 0.2
+          },
+          {
+            "file": "receptor/right/frame_1.png",
+            "duration_beats": 0.8
+          }
+        ],
+        "UpLeft": [
+          {
+            "file": "receptor/upleft/frame_0.png",
+            "duration_beats": 0.2
+          },
+          {
+            "file": "receptor/upleft/frame_1.png",
+            "duration_beats": 0.8
+          }
+        ],
+        "UpRight": [
+          {
+            "file": "receptor/upright/frame_0.png",
+            "duration_beats": 0.2
+          },
+          {
+            "file": "receptor/upright/frame_1.png",
+            "duration_beats": 0.8
+          }
+        ]
+      }
+    },
+    "tap_explosion": {
+      "bright": "explosions/tap_bright.png",
+      "dim": {
+        "Down": "explosions/tap_dim/down.png",
+        "Left": "explosions/tap_dim/left.png",
+        "Up": "explosions/tap_dim/up.png",
+        "Right": "explosions/tap_dim/right.png",
+        "UpLeft": "explosions/tap_dim/upleft.png",
+        "UpRight": "explosions/tap_dim/upright.png"
+      }
+    },
+    "hold_explosion": {
+      "frames": {
+        "Down": [
+          {
+            "file": "explosions/hold/down/frame_0.png"
+          },
+          {
+            "file": "explosions/hold/down/frame_1.png"
+          },
+          {
+            "file": "explosions/hold/down/frame_2.png"
+          },
+          {
+            "file": "explosions/hold/down/frame_3.png"
+          }
+        ],
+        "Left": [
+          {
+            "file": "explosions/hold/left/frame_0.png"
+          },
+          {
+            "file": "explosions/hold/left/frame_1.png"
+          },
+          {
+            "file": "explosions/hold/left/frame_2.png"
+          },
+          {
+            "file": "explosions/hold/left/frame_3.png"
+          }
+        ],
+        "Up": [
+          {
+            "file": "explosions/hold/up/frame_0.png"
+          },
+          {
+            "file": "explosions/hold/up/frame_1.png"
+          },
+          {
+            "file": "explosions/hold/up/frame_2.png"
+          },
+          {
+            "file": "explosions/hold/up/frame_3.png"
+          }
+        ],
+        "Right": [
+          {
+            "file": "explosions/hold/right/frame_0.png"
+          },
+          {
+            "file": "explosions/hold/right/frame_1.png"
+          },
+          {
+            "file": "explosions/hold/right/frame_2.png"
+          },
+          {
+            "file": "explosions/hold/right/frame_3.png"
+          }
+        ],
+        "UpLeft": [
+          {
+            "file": "explosions/hold/upleft/frame_0.png"
+          },
+          {
+            "file": "explosions/hold/upleft/frame_1.png"
+          },
+          {
+            "file": "explosions/hold/upleft/frame_2.png"
+          },
+          {
+            "file": "explosions/hold/upleft/frame_3.png"
+          }
+        ],
+        "UpRight": [
+          {
+            "file": "explosions/hold/upright/frame_0.png"
+          },
+          {
+            "file": "explosions/hold/upright/frame_1.png"
+          },
+          {
+            "file": "explosions/hold/upright/frame_2.png"
+          },
+          {
+            "file": "explosions/hold/upright/frame_3.png"
+          }
+        ]
+      }
+    },
+    "roll_explosion": {
+      "frames": {
+        "Down": [
+          {
+            "file": "explosions/roll/down/frame_0.png"
+          },
+          {
+            "file": "explosions/roll/down/frame_1.png"
+          },
+          {
+            "file": "explosions/roll/down/frame_2.png"
+          },
+          {
+            "file": "explosions/roll/down/frame_3.png"
+          }
+        ],
+        "Left": [
+          {
+            "file": "explosions/roll/left/frame_0.png"
+          },
+          {
+            "file": "explosions/roll/left/frame_1.png"
+          },
+          {
+            "file": "explosions/roll/left/frame_2.png"
+          },
+          {
+            "file": "explosions/roll/left/frame_3.png"
+          }
+        ],
+        "Up": [
+          {
+            "file": "explosions/roll/up/frame_0.png"
+          },
+          {
+            "file": "explosions/roll/up/frame_1.png"
+          },
+          {
+            "file": "explosions/roll/up/frame_2.png"
+          },
+          {
+            "file": "explosions/roll/up/frame_3.png"
+          }
+        ],
+        "Right": [
+          {
+            "file": "explosions/roll/right/frame_0.png"
+          },
+          {
+            "file": "explosions/roll/right/frame_1.png"
+          },
+          {
+            "file": "explosions/roll/right/frame_2.png"
+          },
+          {
+            "file": "explosions/roll/right/frame_3.png"
+          }
+        ],
+        "UpLeft": [
+          {
+            "file": "explosions/roll/upleft/frame_0.png"
+          },
+          {
+            "file": "explosions/roll/upleft/frame_1.png"
+          },
+          {
+            "file": "explosions/roll/upleft/frame_2.png"
+          },
+          {
+            "file": "explosions/roll/upleft/frame_3.png"
+          }
+        ],
+        "UpRight": [
+          {
+            "file": "explosions/roll/upright/frame_0.png"
+          },
+          {
+            "file": "explosions/roll/upright/frame_1.png"
+          },
+          {
+            "file": "explosions/roll/upright/frame_2.png"
+          },
+          {
+            "file": "explosions/roll/upright/frame_3.png"
+          }
+        ]
+      }
+    },
+    "hold": {
+      "head": {
+        "active": {
+          "Down": "hold/head/down_active.png",
+          "Left": "hold/head/left_active.png",
+          "Up": "hold/head/up_active.png",
+          "Right": "hold/head/right_active.png",
+          "UpLeft": "hold/head/upleft_active.png",
+          "UpRight": "hold/head/upright_active.png"
+        },
+        "inactive": {
+          "Down": "hold/head/down_inactive.png",
+          "Left": "hold/head/left_inactive.png",
+          "Up": "hold/head/up_inactive.png",
+          "Right": "hold/head/right_inactive.png",
+          "UpLeft": "hold/head/upleft_inactive.png",
+          "UpRight": "hold/head/upright_inactive.png"
+        }
+      },
+      "body": {
+        "active": {
+          "Down": "hold/body/down_active.png",
+          "Left": "hold/body/left_active.png",
+          "Up": "hold/body/up_active.png",
+          "Right": "hold/body/right_active.png",
+          "UpLeft": "hold/body/upleft_active.png",
+          "UpRight": "hold/body/upright_active.png"
+        },
+        "inactive": {
+          "Down": "hold/body/down_inactive.png",
+          "Left": "hold/body/left_inactive.png",
+          "Up": "hold/body/up_inactive.png",
+          "Right": "hold/body/right_inactive.png",
+          "UpLeft": "hold/body/upleft_inactive.png",
+          "UpRight": "hold/body/upright_inactive.png"
+        }
+      },
+      "bottomcap": {
+        "active": {
+          "Down": "hold/bottomcap/down_active.png",
+          "Left": "hold/bottomcap/left_active.png",
+          "Up": "hold/bottomcap/up_active.png",
+          "Right": "hold/bottomcap/right_active.png",
+          "UpLeft": "hold/bottomcap/upleft_active.png",
+          "UpRight": "hold/bottomcap/upright_active.png"
+        },
+        "inactive": {
+          "Down": "hold/bottomcap/down_inactive.png",
+          "Left": "hold/bottomcap/left_inactive.png",
+          "Up": "hold/bottomcap/up_inactive.png",
+          "Right": "hold/bottomcap/right_inactive.png",
+          "UpLeft": "hold/bottomcap/upleft_inactive.png",
+          "UpRight": "hold/bottomcap/upright_inactive.png"
+        }
+      }
+    },
+    "roll": {
+      "head": {
+        "active": {
+          "Down": "roll/head/down_active.png",
+          "Left": "roll/head/left_active.png",
+          "Up": "roll/head/up_active.png",
+          "Right": "roll/head/right_active.png",
+          "UpLeft": "roll/head/upleft_active.png",
+          "UpRight": "roll/head/upright_active.png"
+        },
+        "inactive": {
+          "Down": "roll/head/down_inactive.png",
+          "Left": "roll/head/left_inactive.png",
+          "Up": "roll/head/up_inactive.png",
+          "Right": "roll/head/right_inactive.png",
+          "UpLeft": "roll/head/upleft_inactive.png",
+          "UpRight": "roll/head/upright_inactive.png"
+        }
+      },
+      "body": {
+        "active": {
+          "Down": "roll/body/active/down.png",
+          "Left": "roll/body/active/left.png",
+          "Up": "roll/body/active/up.png",
+          "Right": "roll/body/active/right.png",
+          "UpLeft": "roll/body/active/upleft.png",
+          "UpRight": "roll/body/active/upright.png"
+        },
+        "inactive": {
+          "Down": "roll/body/inactive/down.png",
+          "Left": "roll/body/inactive/left.png",
+          "Up": "roll/body/inactive/up.png",
+          "Right": "roll/body/inactive/right.png",
+          "UpLeft": "roll/body/inactive/upleft.png",
+          "UpRight": "roll/body/inactive/upright.png"
+        }
+      },
+      "topcap": {
+        "active": {
+          "Down": "roll/topcap/active/down.png",
+          "Left": "roll/topcap/active/left.png",
+          "Up": "roll/topcap/active/up.png",
+          "Right": "roll/topcap/active/right.png",
+          "UpLeft": "roll/topcap/active/upleft.png",
+          "UpRight": "roll/topcap/active/upright.png"
+        },
+        "inactive": {
+          "Down": "roll/topcap/inactive/down.png",
+          "Left": "roll/topcap/inactive/left.png",
+          "Up": "roll/topcap/inactive/up.png",
+          "Right": "roll/topcap/inactive/right.png",
+          "UpLeft": "roll/topcap/inactive/upleft.png",
+          "UpRight": "roll/topcap/inactive/upright.png"
+        }
+      },
+      "bottomcap": {
+        "active": {
+          "Down": "roll/bottomcap/active/down.png",
+          "Left": "roll/bottomcap/active/left.png",
+          "Up": "roll/bottomcap/active/up.png",
+          "Right": "roll/bottomcap/active/right.png",
+          "UpLeft": "roll/bottomcap/active/upleft.png",
+          "UpRight": "roll/bottomcap/active/upright.png"
+        },
+        "inactive": {
+          "Down": "roll/bottomcap/inactive/down.png",
+          "Left": "roll/bottomcap/inactive/left.png",
+          "Up": "roll/bottomcap/inactive/up.png",
+          "Right": "roll/bottomcap/inactive/right.png",
+          "UpLeft": "roll/bottomcap/inactive/upleft.png",
+          "UpRight": "roll/bottomcap/inactive/upright.png"
+        }
+      }
+    },
+    "tap_note": {
+      "00": {
+        "Down": "tap_note/color_00/down.png",
+        "Left": "tap_note/color_00/left.png",
+        "Up": "tap_note/color_00/up.png",
+        "Right": "tap_note/color_00/right.png",
+        "UpLeft": "tap_note/color_00/upleft.png",
+        "UpRight": "tap_note/color_00/upright.png"
+      },
+      "01": {
+        "Down": "tap_note/color_01/down.png",
+        "Left": "tap_note/color_01/left.png",
+        "Up": "tap_note/color_01/up.png",
+        "Right": "tap_note/color_01/right.png",
+        "UpLeft": "tap_note/color_01/upleft.png",
+        "UpRight": "tap_note/color_01/upright.png"
+      },
+      "02": {
+        "Down": "tap_note/color_02/down.png",
+        "Left": "tap_note/color_02/left.png",
+        "Up": "tap_note/color_02/up.png",
+        "Right": "tap_note/color_02/right.png",
+        "UpLeft": "tap_note/color_02/upleft.png",
+        "UpRight": "tap_note/color_02/upright.png"
+      },
+      "03": {
+        "Down": "tap_note/color_03/down.png",
+        "Left": "tap_note/color_03/left.png",
+        "Up": "tap_note/color_03/up.png",
+        "Right": "tap_note/color_03/right.png",
+        "UpLeft": "tap_note/color_03/upleft.png",
+        "UpRight": "tap_note/color_03/upright.png"
+      },
+      "04": {
+        "Down": "tap_note/color_04/down.png",
+        "Left": "tap_note/color_04/left.png",
+        "Up": "tap_note/color_04/up.png",
+        "Right": "tap_note/color_04/right.png",
+        "UpLeft": "tap_note/color_04/upleft.png",
+        "UpRight": "tap_note/color_04/upright.png"
+      },
+      "05": {
+        "Down": "tap_note/color_05/down.png",
+        "Left": "tap_note/color_05/left.png",
+        "Up": "tap_note/color_05/up.png",
+        "Right": "tap_note/color_05/right.png",
+        "UpLeft": "tap_note/color_05/upleft.png",
+        "UpRight": "tap_note/color_05/upright.png"
+      },
+      "06": {
+        "Down": "tap_note/color_06/down.png",
+        "Left": "tap_note/color_06/left.png",
+        "Up": "tap_note/color_06/up.png",
+        "Right": "tap_note/color_06/right.png",
+        "UpLeft": "tap_note/color_06/upleft.png",
+        "UpRight": "tap_note/color_06/upright.png"
+      },
+      "07": {
+        "Down": "tap_note/color_07/down.png",
+        "Left": "tap_note/color_07/left.png",
+        "Up": "tap_note/color_07/up.png",
+        "Right": "tap_note/color_07/right.png",
+        "UpLeft": "tap_note/color_07/upleft.png",
+        "UpRight": "tap_note/color_07/upright.png"
+      },
+      "08": {
+        "Down": "tap_note/color_08/down.png",
+        "Left": "tap_note/color_08/left.png",
+        "Up": "tap_note/color_08/up.png",
+        "Right": "tap_note/color_08/right.png",
+        "UpLeft": "tap_note/color_08/upleft.png",
+        "UpRight": "tap_note/color_08/upright.png"
+      },
+      "09": {
+        "Down": "tap_note/color_09/down.png",
+        "Left": "tap_note/color_09/left.png",
+        "Up": "tap_note/color_09/up.png",
+        "Right": "tap_note/color_09/right.png",
+        "UpLeft": "tap_note/color_09/upleft.png",
+        "UpRight": "tap_note/color_09/upright.png"
+      },
+      "10": {
+        "Down": "tap_note/color_10/down.png",
+        "Left": "tap_note/color_10/left.png",
+        "Up": "tap_note/color_10/up.png",
+        "Right": "tap_note/color_10/right.png",
+        "UpLeft": "tap_note/color_10/upleft.png",
+        "UpRight": "tap_note/color_10/upright.png"
+      },
+      "11": {
+        "Down": "tap_note/color_11/down.png",
+        "Left": "tap_note/color_11/left.png",
+        "Up": "tap_note/color_11/up.png",
+        "Right": "tap_note/color_11/right.png",
+        "UpLeft": "tap_note/color_11/upleft.png",
+        "UpRight": "tap_note/color_11/upright.png"
+      },
+      "12": {
+        "Down": "tap_note/color_12/down.png",
+        "Left": "tap_note/color_12/left.png",
+        "Up": "tap_note/color_12/up.png",
+        "Right": "tap_note/color_12/right.png",
+        "UpLeft": "tap_note/color_12/upleft.png",
+        "UpRight": "tap_note/color_12/upright.png"
+      },
+      "13": {
+        "Down": "tap_note/color_13/down.png",
+        "Left": "tap_note/color_13/left.png",
+        "Up": "tap_note/color_13/up.png",
+        "Right": "tap_note/color_13/right.png",
+        "UpLeft": "tap_note/color_13/upleft.png",
+        "UpRight": "tap_note/color_13/upright.png"
+      },
+      "14": {
+        "Down": "tap_note/color_14/down.png",
+        "Left": "tap_note/color_14/left.png",
+        "Up": "tap_note/color_14/up.png",
+        "Right": "tap_note/color_14/right.png",
+        "UpLeft": "tap_note/color_14/upleft.png",
+        "UpRight": "tap_note/color_14/upright.png"
+      },
+      "15": {
+        "Down": "tap_note/color_15/down.png",
+        "Left": "tap_note/color_15/left.png",
+        "Up": "tap_note/color_15/up.png",
+        "Right": "tap_note/color_15/right.png",
+        "UpLeft": "tap_note/color_15/upleft.png",
+        "UpRight": "tap_note/color_15/upright.png"
+      }
+    },
+    "tap_fake": {
+      "00": {
+        "Down": "tap_note/color_00/down.png",
+        "Left": "tap_note/color_00/left.png",
+        "Up": "tap_note/color_00/up.png",
+        "Right": "tap_note/color_00/right.png",
+        "UpLeft": "tap_note/color_00/upleft.png",
+        "UpRight": "tap_note/color_00/upright.png"
+      },
+      "01": {
+        "Down": "tap_note/color_01/down.png",
+        "Left": "tap_note/color_01/left.png",
+        "Up": "tap_note/color_01/up.png",
+        "Right": "tap_note/color_01/right.png",
+        "UpLeft": "tap_note/color_01/upleft.png",
+        "UpRight": "tap_note/color_01/upright.png"
+      },
+      "02": {
+        "Down": "tap_note/color_02/down.png",
+        "Left": "tap_note/color_02/left.png",
+        "Up": "tap_note/color_02/up.png",
+        "Right": "tap_note/color_02/right.png",
+        "UpLeft": "tap_note/color_02/upleft.png",
+        "UpRight": "tap_note/color_02/upright.png"
+      },
+      "03": {
+        "Down": "tap_note/color_03/down.png",
+        "Left": "tap_note/color_03/left.png",
+        "Up": "tap_note/color_03/up.png",
+        "Right": "tap_note/color_03/right.png",
+        "UpLeft": "tap_note/color_03/upleft.png",
+        "UpRight": "tap_note/color_03/upright.png"
+      },
+      "04": {
+        "Down": "tap_note/color_04/down.png",
+        "Left": "tap_note/color_04/left.png",
+        "Up": "tap_note/color_04/up.png",
+        "Right": "tap_note/color_04/right.png",
+        "UpLeft": "tap_note/color_04/upleft.png",
+        "UpRight": "tap_note/color_04/upright.png"
+      },
+      "05": {
+        "Down": "tap_note/color_05/down.png",
+        "Left": "tap_note/color_05/left.png",
+        "Up": "tap_note/color_05/up.png",
+        "Right": "tap_note/color_05/right.png",
+        "UpLeft": "tap_note/color_05/upleft.png",
+        "UpRight": "tap_note/color_05/upright.png"
+      },
+      "06": {
+        "Down": "tap_note/color_06/down.png",
+        "Left": "tap_note/color_06/left.png",
+        "Up": "tap_note/color_06/up.png",
+        "Right": "tap_note/color_06/right.png",
+        "UpLeft": "tap_note/color_06/upleft.png",
+        "UpRight": "tap_note/color_06/upright.png"
+      },
+      "07": {
+        "Down": "tap_note/color_07/down.png",
+        "Left": "tap_note/color_07/left.png",
+        "Up": "tap_note/color_07/up.png",
+        "Right": "tap_note/color_07/right.png",
+        "UpLeft": "tap_note/color_07/upleft.png",
+        "UpRight": "tap_note/color_07/upright.png"
+      },
+      "08": {
+        "Down": "tap_note/color_08/down.png",
+        "Left": "tap_note/color_08/left.png",
+        "Up": "tap_note/color_08/up.png",
+        "Right": "tap_note/color_08/right.png",
+        "UpLeft": "tap_note/color_08/upleft.png",
+        "UpRight": "tap_note/color_08/upright.png"
+      },
+      "09": {
+        "Down": "tap_note/color_09/down.png",
+        "Left": "tap_note/color_09/left.png",
+        "Up": "tap_note/color_09/up.png",
+        "Right": "tap_note/color_09/right.png",
+        "UpLeft": "tap_note/color_09/upleft.png",
+        "UpRight": "tap_note/color_09/upright.png"
+      },
+      "10": {
+        "Down": "tap_note/color_10/down.png",
+        "Left": "tap_note/color_10/left.png",
+        "Up": "tap_note/color_10/up.png",
+        "Right": "tap_note/color_10/right.png",
+        "UpLeft": "tap_note/color_10/upleft.png",
+        "UpRight": "tap_note/color_10/upright.png"
+      },
+      "11": {
+        "Down": "tap_note/color_11/down.png",
+        "Left": "tap_note/color_11/left.png",
+        "Up": "tap_note/color_11/up.png",
+        "Right": "tap_note/color_11/right.png",
+        "UpLeft": "tap_note/color_11/upleft.png",
+        "UpRight": "tap_note/color_11/upright.png"
+      },
+      "12": {
+        "Down": "tap_note/color_12/down.png",
+        "Left": "tap_note/color_12/left.png",
+        "Up": "tap_note/color_12/up.png",
+        "Right": "tap_note/color_12/right.png",
+        "UpLeft": "tap_note/color_12/upleft.png",
+        "UpRight": "tap_note/color_12/upright.png"
+      },
+      "13": {
+        "Down": "tap_note/color_13/down.png",
+        "Left": "tap_note/color_13/left.png",
+        "Up": "tap_note/color_13/up.png",
+        "Right": "tap_note/color_13/right.png",
+        "UpLeft": "tap_note/color_13/upleft.png",
+        "UpRight": "tap_note/color_13/upright.png"
+      },
+      "14": {
+        "Down": "tap_note/color_14/down.png",
+        "Left": "tap_note/color_14/left.png",
+        "Up": "tap_note/color_14/up.png",
+        "Right": "tap_note/color_14/right.png",
+        "UpLeft": "tap_note/color_14/upleft.png",
+        "UpRight": "tap_note/color_14/upright.png"
+      },
+      "15": {
+        "Down": "tap_note/color_15/down.png",
+        "Left": "tap_note/color_15/left.png",
+        "Up": "tap_note/color_15/up.png",
+        "Right": "tap_note/color_15/right.png",
+        "UpLeft": "tap_note/color_15/upleft.png",
+        "UpRight": "tap_note/color_15/upright.png"
+      }
+    },
+    "tap_lift": {
+      "Down": "tap_lift/down.png",
+      "Left": "tap_lift/left.png",
+      "Up": "tap_lift/up.png",
+      "Right": "tap_lift/right.png",
+      "UpLeft": "tap_lift/upleft.png",
+      "UpRight": "tap_lift/upright.png"
+    },
+    "tap_mine": {
+      "Down": "tap_mine/mine.png",
+      "Left": "tap_mine/mine.png",
+      "Up": "tap_mine/mine.png",
+      "Right": "tap_mine/mine.png",
+      "UpLeft": "tap_mine/mine.png",
+      "UpRight": "tap_mine/mine.png"
+    }
+  }
+}
