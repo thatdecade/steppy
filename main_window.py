@@ -4,27 +4,26 @@ main_window.py
 Single window UI surface for idle, playback, and overlay.
 
 Integration
-- Loads UI from main_window_ui.py generated from main_window_ui.ui
-- Hosts embedded web video player
-- Hosts idle overlay (splash and QR card)
-- Hosts gameplay overlay as a QWidget layer
-- Supports a local demo mode (spacebar toggles IDLE <-> DEMO)
+- Loads UI from main_window_ui.py (generated from main_window_ui.ui).
+- Hosts embedded web video player.
+- Hosts idle overlay (splash and QR card) above everything when idle.
+- Hosts gameplay overlay widget above the player.
+- Hosts demo controls panel (local only) when demo mode is enabled.
 
-Public API
-- show_idle(), hide_idle()
-- set_idle_qr(image)
-- load_video(video_id), cue_video(video_id), play(), pause(), seek(seconds)
-- set_gameplay_overlay_widget(widget)
-- set_demo_controls_widget(widget), set_demo_controls_visible(bool)
+Behavior
+- Normal launch: web server is running, app starts in IDLE.
+- Press Space while idle to toggle demo mode:
+  - Enables on screen controls.
+  - Hides idle splash.
+  - Press Space again to return to IDLE.
 
-Standalone usage
-python -m main_window
+The window does not own the gameplay session. That lives in AppController.
 """
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
+import sys
 from typing import Optional
 
 from PyQt6.QtCore import QEvent, QPoint, QRect, Qt, QUrl, pyqtSignal
@@ -40,9 +39,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from config import get_config, open_config_json_in_editor
 from main_window_ui import Ui_MainWindow
 from web_player_bridge import WebPlayerBridge
+
+from config import get_config, open_config_json_in_editor
 
 import qr_code
 
@@ -79,7 +79,6 @@ class MainWindow(QMainWindow):
         self._kiosk_mode = bool(kiosk_mode)
         self._apply_kiosk_settings(self._kiosk_mode)
 
-        # Host for the video surface plus overlay layers.
         self._layers_host = QWidget(self.ui.centralwidget)
         self._layers_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -87,44 +86,35 @@ class MainWindow(QMainWindow):
         layers_layout.setContentsMargins(0, 0, 0, 0)
         layers_layout.setSpacing(0)
 
-        # splashFrame is provided by the .ui file.
         self.ui.splashFrame.setParent(self._layers_host)
 
+        # Web player
         self.web_player = WebPlayerBridge(self._layers_host)
         self.web_player.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
+        # Backward compatible alias for older code.
+        self._web_player = self.web_player
+
+        # Overlay layer (gameplay overlay widgets live here).
         self._overlay_layer = QWidget(self._layers_host)
         self._overlay_layer.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._overlay_layer.setStyleSheet("background: transparent;")
         self._overlay_layer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        self._overlay_layout = QGridLayout(self._overlay_layer)
-        self._overlay_layout.setContentsMargins(0, 0, 0, 0)
-        self._overlay_layout.setSpacing(0)
-
-        self._gameplay_overlay_widget: Optional[QWidget] = None
+        # Demo controls container layer.
+        self._demo_controls_layer = QWidget(self._layers_host)
+        self._demo_controls_layer.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self._demo_controls_layer.setStyleSheet("background: transparent;")
+        self._demo_controls_layer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._demo_controls_layer.hide()
 
         layers_layout.addWidget(self.web_player, 0, 0)
         layers_layout.addWidget(self._overlay_layer, 0, 0)
+        layers_layout.addWidget(self._demo_controls_layer, 0, 0)
         layers_layout.addWidget(self.ui.splashFrame, 0, 0)
 
-        # Root layout from the .ui file.
         if hasattr(self.ui, "rootLayout") and self.ui.rootLayout is not None:
-            self.ui.rootLayout.addWidget(self._layers_host, 1)
-
-        # Demo controls host goes under the video surface.
-        self._demo_controls_host = QWidget(self.ui.centralwidget)
-        self._demo_controls_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._demo_controls_host_layout = QVBoxLayout(self._demo_controls_host)
-        self._demo_controls_host_layout.setContentsMargins(0, 0, 0, 0)
-        self._demo_controls_host_layout.setSpacing(0)
-        self._demo_controls_widget: Optional[QWidget] = None
-        self._demo_controls_host.hide()
-
-        if hasattr(self.ui, "rootLayout") and self.ui.rootLayout is not None:
-            self.ui.rootLayout.addWidget(self._demo_controls_host, 0)
-
-        self._demo_mode_enabled = False
+            self.ui.rootLayout.addWidget(self._layers_host)
 
         self._idle_qr_card: Optional[QFrame] = None
         self._idle_qr_label: Optional[QLabel] = None
@@ -134,11 +124,21 @@ class MainWindow(QMainWindow):
         self._idle_control_url: str = ""
         self._idle_url_hover_active: bool = False
 
+        self._demo_mode_enabled = False
+        self._demo_controls_widget: Optional[QWidget] = None
+        self._key_input_handler = None
+
+        self._current_video_id: Optional[str] = None
+        self._last_player_state_name = "unstarted"
+
         self._build_idle_overlay_elements()
 
         self.ui.actionPreferences.triggered.connect(self.on_action_preferences)
         self.ui.actionFull_Screen.triggered.connect(self.on_action_fullscreen_toggle)
         self.ui.actionExit.triggered.connect(self.on_action_exit)
+
+        # Track player state for is_playing_state.
+        self.web_player.stateChanged.connect(self._on_player_state_changed)
 
         app_config, _config_path = get_config()
 
@@ -151,77 +151,33 @@ class MainWindow(QMainWindow):
         self._set_idle_url_hint(control_url)
         self.set_idle_qr(control_qimage)
 
-        self.setMinimumSize(0, 0)
         self.show_idle()
         self._set_status_text("IDLE  |  F11 fullscreen  |  press space for demo")
 
     # -------------------------
-    # Public helpers for controller
+    # Properties expected by controller
     # -------------------------
 
     @property
-    def web_player_bridge(self) -> WebPlayerBridge:
-        return self.web_player
+    def current_video_id(self) -> Optional[str]:
+        return self._current_video_id
 
-    def set_gameplay_overlay_widget(self, overlay_widget: Optional[QWidget]) -> None:
-        if self._gameplay_overlay_widget is overlay_widget:
-            return
+    def set_current_video_id(self, video_id: Optional[str]) -> None:
+        cleaned = (video_id or "").strip() or None
+        self._current_video_id = cleaned
 
-        if self._gameplay_overlay_widget is not None:
-            try:
-                self._overlay_layout.removeWidget(self._gameplay_overlay_widget)
-            except Exception:
-                pass
-            self._gameplay_overlay_widget.setParent(None)
-            self._gameplay_overlay_widget.deleteLater()
+    def is_playing_state(self) -> bool:
+        return str(self._last_player_state_name).strip().lower() == "playing"
 
-        self._gameplay_overlay_widget = overlay_widget
-        if overlay_widget is None:
-            return
-
-        overlay_widget.setParent(self._overlay_layer)
-        overlay_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._overlay_layout.addWidget(overlay_widget, 0, 0)
-        overlay_widget.show()
-
-    def set_demo_controls_widget(self, demo_widget: Optional[QWidget]) -> None:
-        if self._demo_controls_widget is demo_widget:
-            return
-
-        if self._demo_controls_widget is not None:
-            old = self._demo_controls_widget
-            try:
-                self._demo_controls_host_layout.removeWidget(old)
-            except Exception:
-                pass
-            old.setParent(None)
-            old.deleteLater()
-
-        self._demo_controls_widget = demo_widget
-        if demo_widget is None:
-            return
-
-        demo_widget.setParent(self._demo_controls_host)
-        demo_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._demo_controls_host_layout.addWidget(demo_widget)
-        demo_widget.show()
-
-    def set_demo_controls_visible(self, visible: bool) -> None:
-        if bool(visible):
-            self._demo_controls_host.show()
-            self._demo_controls_host.raise_()
-        else:
-            self._demo_controls_host.hide()
+    def set_key_input_handler(self, handler) -> None:
+        self._key_input_handler = handler
 
     # -------------------------
-    # Playback facade
+    # Video controls
     # -------------------------
 
-    def load_video(self, video_id: str) -> None:
-        self.web_player.load_video(video_id, start_seconds=0.0, autoplay=True)
-
-    def cue_video(self, video_id: str) -> None:
-        self.web_player.load_video(video_id, start_seconds=0.0, autoplay=False)
+    def load_video(self, video_id: str, *, start_seconds: float = 0.0, autoplay: bool = True) -> None:
+        self.web_player.load_video(video_id, start_seconds=float(start_seconds), autoplay=bool(autoplay))
 
     def play(self) -> None:
         self.web_player.play()
@@ -233,26 +189,67 @@ class MainWindow(QMainWindow):
         self.web_player.seek(float(seconds))
 
     # -------------------------
-    # Menu actions
+    # Overlay wiring
     # -------------------------
 
-    def on_action_fullscreen_toggle(self):
-        if self.isFullScreen():
-            self.showNormal()
-        else:
-            self.showFullScreen()
-        return
+    def set_gameplay_overlay_widget(self, overlay_widget: Optional[QWidget]) -> None:
+        """Replace the gameplay overlay widget hosted in the overlay layer."""
+        # Clear existing children (but keep the layer widget itself).
+        for child in list(self._overlay_layer.children()):
+            if isinstance(child, QWidget):
+                child.setParent(None)
+                child.deleteLater()
 
-    def on_action_preferences(self) -> None:
-        config_path = get_config()[1]
-        opened_path = open_config_json_in_editor(config_path)
-        self._set_status_text("Opened config: " + str(opened_path))
+        if overlay_widget is None:
+            return
 
-    def on_action_exit(self) -> None:
-        self.close()
+        overlay_widget.setParent(self._overlay_layer)
+        overlay_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        layout = self._overlay_layer.layout()
+        if layout is None:
+            layout = QGridLayout(self._overlay_layer)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+
+        if isinstance(layout, QGridLayout):
+            layout.addWidget(overlay_widget, 0, 0)
+
+        overlay_widget.show()
+        overlay_widget.raise_()
+
+    def set_demo_controls_widget(self, demo_controls_widget: Optional[QWidget]) -> None:
+        # Clear existing
+        for child in list(self._demo_controls_layer.children()):
+            if isinstance(child, QWidget):
+                child.setParent(None)
+                child.deleteLater()
+
+        self._demo_controls_widget = demo_controls_widget
+        if demo_controls_widget is None:
+            return
+
+        demo_controls_widget.setParent(self._demo_controls_layer)
+        demo_controls_widget.show()
+
+        layout = self._demo_controls_layer.layout()
+        if layout is None:
+            layout = QGridLayout(self._demo_controls_layer)
+            layout.setContentsMargins(16, 16, 16, 16)
+            layout.setSpacing(0)
+
+        if isinstance(layout, QGridLayout):
+            layout.addWidget(demo_controls_widget, 0, 0, Qt.AlignmentFlag.AlignBottom)
+
+        demo_controls_widget.raise_()
+
+    def set_demo_controls_visible(self, visible: bool) -> None:
+        self._demo_controls_layer.setVisible(bool(visible))
+        if visible:
+            self._demo_controls_layer.raise_()
 
     # -------------------------
-    # Idle overlay controls
+    # Idle splash
     # -------------------------
 
     def show_idle(self) -> None:
@@ -284,6 +281,34 @@ class MainWindow(QMainWindow):
         )
         self._idle_qr_label.setPixmap(scaled)
         self._idle_qr_label.setText("")
+
+    # -------------------------
+    # Actions
+    # -------------------------
+
+    def on_action_fullscreen_toggle(self) -> None:
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
+
+    def on_action_preferences(self) -> None:
+        config_path = get_config()[1]
+        opened_path = open_config_json_in_editor(config_path)
+        self._set_status_text("Opened config: " + str(opened_path))
+
+    def on_action_exit(self) -> None:
+        self.close()
+
+    # -------------------------
+    # Internal helpers
+    # -------------------------
+
+    def _on_player_state_changed(self, player_state_info: object) -> None:
+        try:
+            self._last_player_state_name = str(getattr(player_state_info, "name", "unknown"))
+        except Exception:
+            self._last_player_state_name = "unknown"
 
     def _apply_kiosk_settings(self, enabled: bool) -> None:
         if enabled:
@@ -382,6 +407,7 @@ class MainWindow(QMainWindow):
         debug_label = QLabel("", splash_frame)
         debug_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         debug_label.setWordWrap(True)
+        debug_label.setMaximumWidth(720)
         debug_label.setStyleSheet(
             "background: rgba(5, 3, 19, 160);"
             f"color: {THEME_CYAN};"
@@ -488,11 +514,9 @@ class MainWindow(QMainWindow):
 
         if self._status_label is not None:
             debug_label = self._status_label
-            max_debug_width = int(max(240, frame_width - IDLE_DEBUG_MARGIN_LEFT_PX - 24))
-            debug_label.setMaximumWidth(max_debug_width)
-            debug_label.adjustSize()
-            debug_size = debug_label.size()
-            debug_width = max(1, debug_size.width())
+            debug_label.setMaximumWidth(max(260, frame_width - 120))
+            debug_size = debug_label.sizeHint()
+            debug_width = max(1, min(debug_size.width(), frame_width - 48))
             debug_height = max(1, debug_size.height())
             debug_label.setGeometry(IDLE_DEBUG_MARGIN_LEFT_PX, IDLE_DEBUG_MARGIN_TOP_PX, debug_width, debug_height)
             debug_label.raise_()
@@ -508,27 +532,8 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self._position_idle_overlays()
 
-    # -------------------------
-    # Key handling
-    # -------------------------
-
     def keyPressEvent(self, event: Optional[QKeyEvent]) -> None:
         if event is None:
-            return
-
-        if event.key() == Qt.Key.Key_Space:
-            self._demo_mode_enabled = not self._demo_mode_enabled
-            if self._demo_mode_enabled:
-                self.hide_idle()
-                self.set_demo_controls_visible(True)
-                self.demoModeChanged.emit(True)
-                self._set_status_text("DEMO  |  space toggles  |  F11 fullscreen  |  Esc exits fullscreen")
-            else:
-                self.set_demo_controls_visible(False)
-                self.show_idle()
-                self.demoModeChanged.emit(False)
-                self._set_status_text("IDLE  |  F11 fullscreen  |  press space for demo")
-            event.accept()
             return
 
         if event.key() == Qt.Key.Key_Escape:
@@ -542,6 +547,35 @@ class MainWindow(QMainWindow):
             event.accept()
             return
 
+        if event.key() == Qt.Key.Key_Space:
+            if self.ui.splashFrame.isVisible() and not self._demo_mode_enabled:
+                self._demo_mode_enabled = True
+                self.hide_idle()
+                self.set_demo_controls_visible(True)
+                self.demoModeChanged.emit(True)
+                event.accept()
+                return
+
+            if self._demo_mode_enabled:
+                self._demo_mode_enabled = False
+                self.set_demo_controls_visible(False)
+                self.show_idle()
+                self.demoModeChanged.emit(False)
+                self._set_status_text("IDLE  |  F11 fullscreen  |  press space for demo")
+                event.accept()
+                return
+
+        # Gameplay keys are routed to AppController.
+        handler = self._key_input_handler
+        if callable(handler):
+            try:
+                handled = bool(handler(int(event.key())))
+            except Exception:
+                handled = False
+            if handled:
+                event.accept()
+                return
+
         super().keyPressEvent(event)
 
 
@@ -553,22 +587,8 @@ def main() -> int:
     window.resize(1536, 1024)
     window.show()
 
+    # Minimal UI demo loop (kept for quick layout testing).
     demo_state = _DemoState(is_idle=True, fake_time_seconds=0.0)
-
-    # This demo loop is intentionally minimal. AppController owns the real tick timers.
-    from PyQt6.QtCore import QTimer
-
-    tick_timer = QTimer(window)
-    tick_timer.setInterval(100)
-
-    def on_tick() -> None:
-        nonlocal demo_state
-        if demo_state.is_idle:
-            return
-        demo_state = _DemoState(is_idle=False, fake_time_seconds=demo_state.fake_time_seconds + 0.1)
-
-    tick_timer.timeout.connect(on_tick)
-    tick_timer.start()
 
     return application.exec()
 

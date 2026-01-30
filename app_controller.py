@@ -7,19 +7,19 @@ Responsibilities
 - Own the embedded Flask control bridge (control_api.ControlApiBridge) lifecycle.
 - Own the gameplay session objects (timing, chart, scheduler, judge, overlay).
 - Drive playback via main_window.MainWindow and web_player_bridge.WebPlayerBridge.
-- Provide a local demo mode panel toggled by the spacebar.
+- Own local demo mode UI (onscreen controls), toggled by Space while idle.
 
-Design notes
+Design
 - control_api.ControlApiBridge remains the single bridge to Flask and its in-process polling.
 - AppController is a Qt-side consumer of control state and a coordinator for gameplay.
-- Demo mode is local only and bypasses control_api state updates while enabled.
+- Demo mode is local only. It does not stop the web server.
 """
 
 from __future__ import annotations
 
 import traceback
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from PyQt6.QtCore import QObject, QTimer
 
@@ -54,7 +54,7 @@ class AppController(QObject):
         self,
         *,
         main_window,
-        control_bridge: Optional[ControlApiBridge],
+        control_bridge: ControlApiBridge,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent or main_window)
@@ -79,6 +79,7 @@ class AppController(QObject):
         self._tick_timer.setInterval(16)
         self._tick_timer.timeout.connect(self._on_tick)
 
+        # Demo panel
         self._demo_controls = DemoControlsWidget(parent=self._main_window)
         self._demo_controls.requestLoad.connect(self._on_demo_load)
         self._demo_controls.requestPlay.connect(self._on_demo_play)
@@ -92,18 +93,24 @@ class AppController(QObject):
 
         self._main_window.set_demo_controls_widget(self._demo_controls)
         self._main_window.demoModeChanged.connect(self.set_demo_mode_enabled)
+        self._main_window.set_key_input_handler(self.handle_key_press)
 
         # Web player integration
-        self._main_window.web_player.timeUpdated.connect(self._on_player_time_updated)
-        self._main_window.web_player.stateChanged.connect(self._on_player_state_changed)
-        self._main_window.web_player.errorOccurred.connect(self._on_player_error)
+        web_player_widget = getattr(self._main_window, "web_player", None)
+        if web_player_widget is None:
+            web_player_widget = getattr(self._main_window, "_web_player", None)
+        if web_player_widget is None:
+            raise RuntimeError("MainWindow does not expose a web player widget")
+
+        web_player_widget.timeUpdated.connect(self._on_player_time_updated)
+        web_player_widget.stateChanged.connect(self._on_player_state_changed)
+        web_player_widget.errorOccurred.connect(self._on_player_error)
 
         # Control API integration
-        if self._control_bridge is not None:
-            self._control_bridge.video_changed.connect(self._on_control_video_changed)
-            self._control_bridge.state_changed.connect(self._on_control_state_changed)
-            self._control_bridge.difficulty_changed.connect(self._on_control_difficulty_changed)
-            self._control_bridge.error_changed.connect(self._on_control_error_changed)
+        self._control_bridge.video_changed.connect(self._on_control_video_changed)
+        self._control_bridge.state_changed.connect(self._on_control_state_changed)
+        self._control_bridge.difficulty_changed.connect(self._on_control_difficulty_changed)
+        self._control_bridge.error_changed.connect(self._on_control_error_changed)
 
         self._lazy_init_assets()
         self._install_new_chart(self._build_fallback_chart())
@@ -113,8 +120,7 @@ class AppController(QObject):
         return self._timing_model
 
     def start(self) -> None:
-        if self._control_bridge is not None:
-            self._control_bridge.start()
+        self._control_bridge.start()
         if not self._tick_timer.isActive():
             self._tick_timer.start()
 
@@ -130,10 +136,9 @@ class AppController(QObject):
             self._demo_controls.set_status_text("Demo mode enabled")
         else:
             self._demo_controls.set_status_text("")
-            if self._control_bridge is not None:
-                status = self._control_bridge.last_status()
-                if status is not None:
-                    self._apply_control_status(status)
+            status = self._control_bridge.last_status()
+            if status is not None:
+                self._apply_control_status(status)
 
     # -------------------------
     # Control API events
@@ -155,6 +160,8 @@ class AppController(QObject):
         if self._demo_mode_enabled:
             return
         self._playback_state.difficulty = (difficulty or "easy").strip().lower() or "easy"
+        if self._overlay_widget is not None:
+            self._overlay_widget.set_bpm_guess(_difficulty_to_bpm_guess(self._playback_state.difficulty))
 
     def _on_control_error_changed(self, error_text: str) -> None:
         cleaned = (error_text or "").strip()
@@ -227,9 +234,7 @@ class AppController(QObject):
             autoplay=False,
         )
 
-        self._demo_controls.set_status_text(
-            "Loaded " + video_id + " difficulty " + difficulty + " (video cued)"
-        )
+        self._demo_controls.set_status_text("Loaded " + video_id + " difficulty " + difficulty + " (video cued)")
 
     def _on_demo_play(self) -> None:
         self._main_window.hide_idle()
@@ -259,14 +264,9 @@ class AppController(QObject):
         if self._overlay_widget is not None:
             self._overlay_widget.set_bpm_guess(bpm_guess)
 
-        # Only rebuild chart when a video is already loaded.
         video_id = self._main_window.current_video_id
         if video_id:
-            self._load_chart_only(
-                video_id=video_id,
-                difficulty=self._playback_state.difficulty,
-                duration_seconds=None,
-            )
+            self._load_chart_only(video_id=video_id, difficulty=self._playback_state.difficulty, duration_seconds=None)
 
     # -------------------------
     # Web player events
@@ -315,28 +315,56 @@ class AppController(QObject):
     ) -> None:
         self._main_window.set_current_video_id(video_id)
         self._main_window.load_video(video_id, autoplay=bool(autoplay))
-        self._load_chart_only(
-            video_id=video_id,
-            difficulty=difficulty,
-            duration_seconds=duration_seconds,
-        )
+        self._load_chart_only(video_id=video_id, difficulty=difficulty, duration_seconds=duration_seconds)
 
-    def _load_chart_only(
-        self,
-        *,
-        video_id: str,
-        difficulty: str,
-        duration_seconds: Optional[float],
-    ) -> None:
+    def _load_chart_only(self, *, video_id: str, difficulty: str, duration_seconds: Optional[float]) -> None:
         chart = self._resolve_chart(video_id=video_id, difficulty=difficulty, duration_seconds=duration_seconds)
         self._install_new_chart(chart)
+
+    def _coerce_to_chart(self, value: Any) -> Optional[Chart]:
+        if value is None:
+            return None
+
+        if isinstance(value, Chart):
+            return value
+
+        # Common wrapper objects: ChartResult(chart=Chart, ...)
+        for attr_name in ["chart", "chart_value", "chart_model", "result", "value"]:
+            try:
+                inner = getattr(value, attr_name)
+            except Exception:
+                inner = None
+            if inner is None:
+                continue
+            if isinstance(inner, Chart):
+                return inner
+            if hasattr(inner, "notes") and hasattr(inner, "duration_seconds"):
+                try:
+                    return Chart(notes=list(inner.notes), duration_seconds=float(inner.duration_seconds))
+                except Exception:
+                    pass
+
+        # If it is chart-like, try to build a real Chart.
+        if hasattr(value, "notes") and hasattr(value, "duration_seconds"):
+            try:
+                return Chart(notes=list(value.notes), duration_seconds=float(value.duration_seconds))
+            except Exception:
+                return None
+
+        # Dict payload
+        if isinstance(value, dict) and "notes" in value and "duration_seconds" in value:
+            try:
+                return Chart(notes=list(value["notes"]), duration_seconds=float(value["duration_seconds"]))
+            except Exception:
+                return None
+
+        return None
 
     def _resolve_chart(self, *, video_id: str, difficulty: str, duration_seconds: Optional[float]) -> Chart:
         self._lazy_init_chart_engine()
         if self._chart_engine is None:
             return self._build_fallback_chart()
 
-        # Try a few known API shapes to avoid tight coupling during iteration.
         engine = self._chart_engine
         method_candidates = [
             "get_chart",
@@ -352,14 +380,20 @@ class AppController(QObject):
                 continue
 
             try:
-                return method(video_id=video_id, difficulty=difficulty, duration_seconds=duration_seconds)
+                result = method(video_id=video_id, difficulty=difficulty, duration_seconds=duration_seconds)
             except TypeError:
                 try:
-                    return method(video_id, difficulty, duration_seconds)
+                    result = method(video_id, difficulty, duration_seconds)
                 except Exception:
                     traceback.print_exc()
+                    continue
             except Exception:
                 traceback.print_exc()
+                continue
+
+            chart = self._coerce_to_chart(result)
+            if chart is not None:
+                return chart
 
         return self._build_fallback_chart()
 
@@ -389,7 +423,6 @@ class AppController(QObject):
 
     def _on_tick(self) -> None:
         if self._judge_engine is not None:
-            # Only auto-miss when playing.
             if self._main_window.is_playing_state():
                 self._judge_engine.update_for_time(self._timing_model.song_time_seconds)
 
@@ -460,12 +493,10 @@ class AppController(QObject):
             self._chart_engine = None
 
     def _build_fallback_chart(self) -> Chart:
-        # Safe fallback if charting is unavailable.
         try:
             from chart_generator_fast import build_sample_chart
 
             bpm_guess = _difficulty_to_bpm_guess(self._playback_state.difficulty)
             return build_sample_chart(difficulty=self._playback_state.difficulty, bpm=bpm_guess)
         except Exception:
-            # Last resort: empty chart.
             return Chart(notes=[], duration_seconds=60.0)

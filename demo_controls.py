@@ -1,15 +1,9 @@
 """\
 demo_controls.py
 
-Local on-screen controls for demo mode.
+Local onscreen controls for demo mode.
 
-Purpose
-- Provide a compact control panel similar to gameplay_harness.
-- Intended to be embedded under the video surface in main_window.MainWindow.
-
-Design
-- Emits signals so AppController owns gameplay state and side effects.
-- Uses word-wrapped status output to avoid expanding the window width.
+This panel mirrors gameplay_harness controls, but is meant to be embedded in MainWindow.
 """
 
 from __future__ import annotations
@@ -17,11 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QGridLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -36,12 +30,12 @@ from PyQt6.QtWidgets import (
 class DemoRequest:
     video_id: str
     difficulty: str
-    av_offset_seconds: float
     muted: bool
+    av_offset_seconds: float
 
 
-class DemoControlsWidget(QWidget):
-    requestLoad = pyqtSignal(object)  # DemoRequest
+class DemoControlsWidget(QFrame):
+    requestLoad = pyqtSignal(object)
     requestPlay = pyqtSignal()
     requestPause = pyqtSignal()
     requestResume = pyqtSignal()
@@ -51,12 +45,22 @@ class DemoControlsWidget(QWidget):
     requestAvOffsetChanged = pyqtSignal(float)
     requestDifficultyChanged = pyqtSignal(str)
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, *, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+
+        self.setObjectName("demoControls")
+        self.setStyleSheet(
+            "QFrame#demoControls {"
+            "  background: rgba(5, 3, 19, 210);"
+            "  border: 2px solid rgba(172, 228, 252, 120);"
+            "  border-radius: 14px;"
+            "}"
+        )
 
         self._video_id_input = QLineEdit(self)
         self._video_id_input.setPlaceholderText("YouTube video id or URL")
-        self._video_id_input.setMinimumWidth(260)
+        self._video_id_input.setText("dQw4w9WgXcQ")
+        self._video_id_input.setMinimumWidth(220)
 
         self._difficulty_combo = QComboBox(self)
         self._difficulty_combo.addItems(["easy", "medium", "hard"])
@@ -77,81 +81,84 @@ class DemoControlsWidget(QWidget):
         self._av_offset_spinbox.setSuffix(" ms")
 
         self._status_label = QLabel("", self)
+        self._status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._status_label.setWordWrap(True)
+        self._status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self._status_label.setStyleSheet("color: rgba(243, 240, 252, 230);")
+        # Critical: allow wrapping to shrink the panel instead of forcing the window minimum width.
         self._status_label.setMinimumWidth(0)
-        self._status_label.setTextInteractionFlags(self._status_label.textInteractionFlags())
+        self._status_label.setMaximumWidth(720)
 
-        self._wire_signals()
-        self._build_layout()
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(12, 10, 12, 10)
+        root_layout.setSpacing(8)
 
-    def set_default_video_text(self, text: str) -> None:
-        self._video_id_input.setText((text or "").strip())
+        row1 = QHBoxLayout()
+        row1.setSpacing(8)
+        row1.addWidget(self._video_id_input, 1)
+        row1.addWidget(self._difficulty_combo)
+        row1.addWidget(self._button_load)
 
-    def set_status_text(self, text: str) -> None:
-        self._status_label.setText((text or "").strip())
+        row2 = QHBoxLayout()
+        row2.setSpacing(8)
+        row2.addWidget(self._button_play)
+        row2.addWidget(self._button_pause)
+        row2.addWidget(self._button_resume)
+        row2.addWidget(self._button_restart)
+        row2.addWidget(self._button_stop)
+        row2.addStretch(1)
+        row2.addWidget(self._mute_checkbox)
+        row2.addWidget(QLabel("AV offset", self))
+        row2.addWidget(self._av_offset_spinbox)
 
-    def current_request(self) -> DemoRequest:
-        return DemoRequest(
-            video_id=(self._video_id_input.text() or "").strip(),
-            difficulty=(self._difficulty_combo.currentText() or "easy").strip().lower() or "easy",
-            av_offset_seconds=float(self._av_offset_spinbox.value()) / 1000.0,
-            muted=bool(self._mute_checkbox.isChecked()),
-        )
+        root_layout.addLayout(row1)
+        root_layout.addLayout(row2)
+        root_layout.addWidget(self._status_label, 0)
 
-    def _wire_signals(self) -> None:
-        self._button_load.clicked.connect(self._on_clicked_load)
+        self._button_load.clicked.connect(self._emit_load_request)
         self._button_play.clicked.connect(self.requestPlay.emit)
         self._button_pause.clicked.connect(self.requestPause.emit)
         self._button_resume.clicked.connect(self.requestResume.emit)
         self._button_restart.clicked.connect(self.requestRestart.emit)
         self._button_stop.clicked.connect(self.requestStop.emit)
-
         self._mute_checkbox.stateChanged.connect(self._on_mute_changed)
         self._av_offset_spinbox.valueChanged.connect(self._on_av_offset_changed)
-        self._difficulty_combo.currentTextChanged.connect(self._on_difficulty_changed)
+        self._difficulty_combo.currentTextChanged.connect(self.requestDifficultyChanged.emit)
 
-    def _build_layout(self) -> None:
-        root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(8, 6, 8, 6)
-        root_layout.setSpacing(6)
+    def set_status_text(self, text: str) -> None:
+        self._status_label.setText((text or "").strip())
+        self._status_label.adjustSize()
+        self.updateGeometry()
 
-        row_layout = QHBoxLayout()
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.setSpacing(6)
+    def current_difficulty(self) -> str:
+        return (self._difficulty_combo.currentText() or "easy").strip().lower() or "easy"
 
-        row_layout.addWidget(self._video_id_input, 1)
-        row_layout.addWidget(self._difficulty_combo)
+    def current_video_text(self) -> str:
+        return (self._video_id_input.text() or "").strip()
 
-        row_layout.addWidget(self._button_load)
-        row_layout.addWidget(self._button_play)
-        row_layout.addWidget(self._button_pause)
-        row_layout.addWidget(self._button_resume)
-        row_layout.addWidget(self._button_restart)
-        row_layout.addWidget(self._button_stop)
+    def _emit_load_request(self) -> None:
+        from web_player_bridge import extract_youtube_video_id
 
-        row_layout.addWidget(self._mute_checkbox)
-        row_layout.addWidget(QLabel("AV offset", self))
-        row_layout.addWidget(self._av_offset_spinbox)
+        parsed_video_id = extract_youtube_video_id(self.current_video_text())
+        if not parsed_video_id:
+            self.set_status_text("Invalid video id")
+            return
 
-        root_layout.addLayout(row_layout)
+        difficulty = self.current_difficulty()
+        muted = bool(self._mute_checkbox.isChecked())
+        av_offset_seconds = float(self._av_offset_spinbox.value()) / 1000.0
 
-        # Status on its own line so it can wrap within the window width.
-        status_container = QWidget(self)
-        status_layout = QGridLayout(status_container)
-        status_layout.setContentsMargins(0, 0, 0, 0)
-        status_layout.setSpacing(0)
-        status_layout.addWidget(self._status_label, 0, 0)
-        root_layout.addWidget(status_container)
+        self.requestLoad.emit(
+            DemoRequest(
+                video_id=parsed_video_id,
+                difficulty=difficulty,
+                muted=muted,
+                av_offset_seconds=av_offset_seconds,
+            )
+        )
 
-    def _on_clicked_load(self) -> None:
-        self.requestLoad.emit(self.current_request())
-
-    def _on_mute_changed(self, _value: int) -> None:
+    def _on_mute_changed(self, _state: int) -> None:
         self.requestMuteChanged.emit(bool(self._mute_checkbox.isChecked()))
 
     def _on_av_offset_changed(self, value_milliseconds: int) -> None:
         self.requestAvOffsetChanged.emit(float(value_milliseconds) / 1000.0)
-
-    def _on_difficulty_changed(self, difficulty_text: str) -> None:
-        difficulty_normalized = (difficulty_text or "easy").strip().lower() or "easy"
-        self.requestDifficultyChanged.emit(difficulty_normalized)
