@@ -106,12 +106,7 @@ class GameplayOverlayWidget(QWidget):
         self._graphics_pack = resolved_pack
 
         if self._debug_enabled:
-            pack_summary = "none"
-            if self._graphics_pack is not None:
-                try:
-                    pack_summary = str(self._graphics_pack.map_file_path)
-                except Exception:
-                    pack_summary = "loaded"
+            pack_summary = "none" if self._graphics_pack is None else "loaded"
             _debug_print_overlay(f"Overlay init graphics_pack={pack_summary}")
 
         self._state_text: str = "unknown"

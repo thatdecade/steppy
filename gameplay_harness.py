@@ -11,6 +11,12 @@ What it does
 - Runs a minimal gameplay pipeline (timing, scheduler, judge, overlay)
 - Provides basic controls (load, play, pause, resume, restart, stop)
 - Reads keyboard input on WASD as lanes 0..3
+
+Chart integration
+- Uses ChartEngine to resolve charts in this order:
+  1) Charts/<video_id>/ (curated)
+  2) ChartsAuto/<video_id>/ (cached auto)
+  3) If missing, generates a dummy chart via chart_generator_fast and caches it
 """
 
 from __future__ import annotations
@@ -18,7 +24,7 @@ from __future__ import annotations
 import sys
 import traceback
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Optional
 
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QKeyEvent
@@ -37,7 +43,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from gameplay_models import Chart, InputEvent, NoteEvent
+from chart_engine import ChartEngine, ChartResult
+from gameplay_models import InputEvent
 from graphics_pack import GraphicsPack
 from input_router import InputRouter
 from judge import JudgeEngine
@@ -53,89 +60,8 @@ class HarnessState:
     video_id: Optional[str] = None
     difficulty: str = "easy"
     bpm_guess: float = 120.0
-
-
-def _difficulty_to_bpm_guess(difficulty: str) -> float:
-    difficulty_normalized = (difficulty or "easy").strip().lower()
-    if difficulty_normalized == "hard":
-        return 150.0
-    if difficulty_normalized == "medium":
-        return 130.0
-    return 120.0
-
-
-def build_sample_chart(*, difficulty: str, bpm: float, duration_seconds: float = 60.0) -> Chart:
-    difficulty_normalized = (difficulty or "easy").strip().lower()
-
-    safe_bpm = float(bpm) if float(bpm) > 0.0 else 120.0
-    seconds_per_beat = 60.0 / safe_bpm
-
-    start_time_seconds = 2.0
-
-    notes: List[NoteEvent] = []
-    lane_cycle = [0, 1, 2, 3, 2, 1]
-    lane_index = 0
-
-    def add_note(time_seconds: float, lane: int) -> None:
-        notes.append(NoteEvent(time_seconds=float(time_seconds), lane=int(lane)))
-
-    def add_jump(time_seconds: float, lane_a: int, lane_b: int) -> None:
-        if lane_a == lane_b:
-            add_note(time_seconds, lane_a)
-            return
-        add_note(time_seconds, lane_a)
-        add_note(time_seconds, lane_b)
-
-    beat_count = int(max(1, (duration_seconds - start_time_seconds - 2.0) / seconds_per_beat))
-
-    for beat_index in range(beat_count):
-        beat_time = start_time_seconds + (float(beat_index) * seconds_per_beat)
-
-        if difficulty_normalized == "easy":
-            if beat_index % 2 == 0:
-                lane = lane_cycle[lane_index % len(lane_cycle)]
-                lane_index += 1
-                add_note(beat_time, lane)
-
-            if beat_index in (8, 16):
-                lane = lane_cycle[lane_index % len(lane_cycle)]
-                add_note(beat_time + seconds_per_beat * 0.5, lane)
-
-        elif difficulty_normalized == "medium":
-            lane = lane_cycle[lane_index % len(lane_cycle)]
-            lane_index += 1
-            add_note(beat_time, lane)
-
-            if beat_index % 4 == 2:
-                lane = lane_cycle[lane_index % len(lane_cycle)]
-                add_note(beat_time + seconds_per_beat * 0.5, lane)
-
-            if beat_index == 20:
-                add_jump(beat_time, 0, 3)
-
-        else:
-            lane = lane_cycle[lane_index % len(lane_cycle)]
-            lane_index += 1
-            add_note(beat_time, lane)
-
-            add_note(beat_time + seconds_per_beat * 0.5, lane_cycle[lane_index % len(lane_cycle)])
-            lane_index += 1
-
-            if beat_index in (12, 13, 14):
-                add_note(beat_time + seconds_per_beat * 0.25, 1)
-                add_note(beat_time + seconds_per_beat * 0.75, 2)
-
-            if beat_index in (18, 26, 34):
-                add_jump(beat_time, 0, 2)
-
-        if len(notes) >= 64:
-            break
-
-    if len(notes) < 12:
-        while len(notes) < 12:
-            add_note(start_time_seconds + float(len(notes)) * seconds_per_beat, len(notes) % 4)
-
-    return Chart(notes=notes, duration_seconds=float(duration_seconds))
+    chart_source_kind: str = "unknown"
+    chart_path_text: str = ""
 
 
 class GameplayHarnessWindow(QMainWindow):
@@ -147,16 +73,16 @@ class GameplayHarnessWindow(QMainWindow):
 
         self._timing_model = TimingModel()
         self._harness_state = HarnessState()
+        self._chart_engine = ChartEngine()
 
         self._harness_state.difficulty = "easy"
-        self._harness_state.bpm_guess = _difficulty_to_bpm_guess(self._harness_state.difficulty)
 
-        self._chart = build_sample_chart(
+        initial_chart_result = self._chart_engine.get_chart(
+            video_id="",
             difficulty=self._harness_state.difficulty,
-            bpm=self._harness_state.bpm_guess,
+            duration_seconds=None,
         )
-        self._note_scheduler = NoteScheduler(self._chart)
-        self._judge_engine = JudgeEngine(self._note_scheduler)
+        self._apply_chart_result(initial_chart_result)
 
         self._player_bridge = WebPlayerBridge(self)
 
@@ -194,6 +120,52 @@ class GameplayHarnessWindow(QMainWindow):
 
         self._ui_ready = True
         self._set_state("unstarted")
+
+    def _apply_chart_result(self, chart_result: ChartResult) -> None:
+        self._chart = chart_result.chart
+        self._note_scheduler = NoteScheduler(self._chart)
+        self._judge_engine = JudgeEngine(self._note_scheduler)
+
+        bpm_guess_value = float(chart_result.bpm_guess)
+        if bpm_guess_value <= 0.0:
+            bpm_guess_value = 120.0
+
+        self._harness_state.bpm_guess = bpm_guess_value
+        self._harness_state.chart_source_kind = str(chart_result.source_kind)
+        self._harness_state.chart_path_text = str(chart_result.simfile_path) if chart_result.simfile_path else ""
+
+    def _load_chart_for_selection(self) -> None:
+        video_id_value = (self._harness_state.video_id or "").strip()
+        difficulty_value = (self._harness_state.difficulty or "easy").strip().lower() or "easy"
+
+        chart_result = self._chart_engine.get_chart(
+            video_id=video_id_value,
+            difficulty=difficulty_value,
+            duration_seconds=None,
+        )
+        self._apply_chart_result(chart_result)
+
+        overlay_config = OverlayConfig(bpm_guess=self._harness_state.bpm_guess)
+        new_overlay = GameplayOverlayWidget(
+            timing_model=self._timing_model,
+            note_scheduler=self._note_scheduler,
+            judge_engine=self._judge_engine,
+            overlay_config=overlay_config,
+            graphics_pack=self._graphics_pack,
+            parent=self,
+        )
+        self._replace_overlay_widget(new_overlay)
+
+        try:
+            self._input_router.inputEvent.disconnect(self._on_input_event)
+        except Exception as exception:
+            print(f"[harness] Failed disconnecting inputEvent signal: {exception}", flush=True)
+            traceback.print_exc()
+
+        self._input_router = InputRouter(lambda: float(self._timing_model.song_time_seconds), self)
+        self._input_router.inputEvent.connect(self._on_input_event)
+
+        self._set_state(self._harness_state.state_text)
 
     def _build_ui(self) -> None:
         root_widget = QWidget(self)
@@ -292,6 +264,10 @@ class GameplayHarnessWindow(QMainWindow):
 
         assets_status = "assets ok" if self._graphics_pack is not None else "assets missing"
 
+        chart_source_text = self._harness_state.chart_source_kind
+        if self._harness_state.chart_path_text:
+            chart_source_text += " " + self._harness_state.chart_path_text
+
         status_label.setText(
             "state "
             + self._harness_state.state_text
@@ -301,6 +277,10 @@ class GameplayHarnessWindow(QMainWindow):
             + f"{self._timing_model.song_time_seconds:.3f}"
             + "  diff "
             + self._harness_state.difficulty
+            + "  bpm "
+            + f"{self._harness_state.bpm_guess:.1f}"
+            + "  chart "
+            + chart_source_text
             + "  "
             + assets_status
         )
@@ -344,6 +324,8 @@ class GameplayHarnessWindow(QMainWindow):
             return
 
         self._harness_state.video_id = parsed_video_id
+
+        self._load_chart_for_selection()
         self._judge_engine.reset()
         self._note_scheduler.reset()
 
@@ -393,37 +375,8 @@ class GameplayHarnessWindow(QMainWindow):
     def _on_difficulty_changed(self, difficulty_text: str) -> None:
         difficulty_normalized = (difficulty_text or "easy").strip().lower() or "easy"
         self._harness_state.difficulty = difficulty_normalized
-        self._harness_state.bpm_guess = _difficulty_to_bpm_guess(difficulty_normalized)
 
-        self._chart = build_sample_chart(
-            difficulty=difficulty_normalized,
-            bpm=self._harness_state.bpm_guess,
-        )
-        self._note_scheduler = NoteScheduler(self._chart)
-        self._judge_engine = JudgeEngine(self._note_scheduler)
-
-        overlay_config = OverlayConfig(bpm_guess=self._harness_state.bpm_guess)
-
-        new_overlay = GameplayOverlayWidget(
-            timing_model=self._timing_model,
-            note_scheduler=self._note_scheduler,
-            judge_engine=self._judge_engine,
-            overlay_config=overlay_config,
-            graphics_pack=self._graphics_pack,
-            parent=self,
-        )
-        self._replace_overlay_widget(new_overlay)
-
-        try:
-            self._input_router.inputEvent.disconnect(self._on_input_event)
-        except Exception as exception:
-            print(f"[harness] Failed disconnecting inputEvent signal: {exception}", flush=True)
-            traceback.print_exc()
-
-        self._input_router = InputRouter(lambda: float(self._timing_model.song_time_seconds), self)
-        self._input_router.inputEvent.connect(self._on_input_event)
-
-        self._set_state(self._harness_state.state_text)
+        self._load_chart_for_selection()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if self._input_router.handle_key_press(event):

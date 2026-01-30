@@ -1,20 +1,3 @@
-"""
-steppy.py
-
-Real entrypoint that launches the full application. Supports demo mode for offline development.
-
-Integration
-- Creates QApplication
-- Loads config and paths
-- Instantiates controller and main window
-- Starts embedded Flask web server via control_api.ControlApiBridge
-- Wires control signals and starts the Qt event loop
-
-TODO (pending integration with other modules)
-- Replace local path discovery with paths.py (not available yet).
-- Replace direct MainWindow wiring with AppController wiring from app_controller.py (not available yet).
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -25,26 +8,13 @@ from typing import Optional
 
 from PyQt6.QtWidgets import QApplication
 
+from app_controller import AppController
 from config import get_config
-from control_api import ControlApiBridge, ControlStatus
+from control_api import ControlApiBridge
 from main_window import MainWindow
 
 
-@dataclass
-class _RuntimeState:
-    last_state: str = "UNKNOWN"
-    last_video_id: Optional[str] = None
-
-
 def _resolve_web_root_dir() -> Path:
-    """Resolve the web assets directory.
-
-    The standalone web_server.py picks a default of <web_server.py dir>/assets.
-    steppy.py tries a few sensible candidates, then falls back.
-
-    TODO: Replace this with paths.py once it exists.
-    """
-
     candidates: list[Path] = []
 
     try:
@@ -69,39 +39,6 @@ def _resolve_web_root_dir() -> Path:
         return candidates[0]
 
     return Path.cwd()
-
-
-def _apply_status_to_window(*, main_window: MainWindow, status: ControlStatus, runtime_state: _RuntimeState) -> None:
-    state_value = (status.state or "").strip().upper()
-
-    if state_value == "IDLE":
-        main_window.show_idle()
-        try:
-            main_window.pause()
-        except Exception:
-            pass
-
-    elif state_value == "PLAYING":
-        main_window.hide_idle()
-        if status.video_id and status.video_id != runtime_state.last_video_id:
-            main_window.load_video(status.video_id)
-            runtime_state.last_video_id = status.video_id
-        try:
-            main_window.play()
-        except Exception:
-            pass
-
-    elif state_value == "PAUSED":
-        main_window.hide_idle()
-        if status.video_id and status.video_id != runtime_state.last_video_id:
-            main_window.load_video(status.video_id)
-            runtime_state.last_video_id = status.video_id
-        try:
-            main_window.pause()
-        except Exception:
-            pass
-
-    runtime_state.last_state = state_value or "UNKNOWN"
 
 
 def main() -> int:
@@ -134,8 +71,6 @@ def main() -> int:
 
     web_root_dir = _resolve_web_root_dir()
 
-    runtime_state = _RuntimeState()
-
     control_bridge = ControlApiBridge(
         bind_host=str(app_config.web_server.host),
         bind_port=int(app_config.web_server.port),
@@ -145,29 +80,8 @@ def main() -> int:
         parent=main_window,
     )
 
-    def on_video_changed(status_object: object) -> None:
-        status = status_object if isinstance(status_object, ControlStatus) else None
-        if status is None:
-            return
-        _apply_status_to_window(main_window=main_window, status=status, runtime_state=runtime_state)
-
-    def on_state_changed(_state_text: str) -> None:
-        status = control_bridge.last_status()
-        if status is None:
-            return
-        _apply_status_to_window(main_window=main_window, status=status, runtime_state=runtime_state)
-
-    def on_error_changed(error_text: str) -> None:
-        cleaned = (error_text or "").strip()
-        if not cleaned:
-            return
-        print("Control API error: " + cleaned, file=sys.stderr)
-
-    control_bridge.video_changed.connect(on_video_changed)
-    control_bridge.state_changed.connect(on_state_changed)
-    control_bridge.error_changed.connect(on_error_changed)
-
-    control_bridge.start()
+    controller = AppController(main_window=main_window, control_bridge=control_bridge)
+    controller.start()
 
     return int(qt_application.exec())
 

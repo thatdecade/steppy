@@ -121,26 +121,58 @@ Prints resolved paths and optionally creates them.
 ### app_controller.py
 
 **Purpose**
-Central orchestrator and state machine owner.
+Central orchestrator that converts user intent (from control_api) into real runtime behavior and owns the gameplay session lifecycle.
 
-**Integration responsibilities**
+**Responsibilities**
 
-* Accepts commands from the web server command queue
-* Commands embedded player via web_player_bridge
-* Loads charts via library_index or chart_engine
-* Advances scheduler, judge, and overlay
-* Controls idle overlay visibility and QR refresh
-* Emits lighting events (no consumer yet)
+* Subscribe to control_api signals and interpret them as intent changes.
+* Own the runtime state machine:
 
-Session lifecycle:
+  * IDLE: show idle overlay, pause player
+  * PLAYING: ensure video loaded, play, run gameplay tick
+  * PAUSED: pause player, freeze gameplay tick
+  * RESULTS: finalize session, optionally cache chart, return to IDLE
+* Own and drive WebPlayerBridge:
 
-* IDLE shows logo and QR
-* PLAYING shows video and overlay
-* RESULTS returns to IDLE unless configured otherwise
+  * load_video, play, pause, seek, mute
+  * listen to player state and timeUpdated to keep TimingModel updated
+* Own chart lifecycle:
 
-**Standalone `main()`**
-Runs a headless simulated session with fake chart and synthetic inputs.
+  * when video_id or difficulty changes:
+    * select chart source via ChartEngine (curated > cached auto > rolling)
+    * reset scheduler and judge
+    * configure overlay
+  * pass duration_seconds from ControlStatus to ChartEngine when available
+  * on session end, trigger ChartEngine export of auto chart if generation occurred
+* Own gameplay pipeline objects:
 
+  * TimingModel
+  * NoteScheduler (backed by chart handle from ChartEngine)
+  * JudgeEngine
+  * Overlay widget wiring and tick scheduling
+
+**Integration**
+
+* control_api provides intent and metadata, app_controller performs side effects.
+* app_controller is the only module that should talk to:
+
+  * WebPlayerBridge
+  * ChartEngine, library_index, sm_store
+  * NoteScheduler, JudgeEngine, overlay_renderer
+* steppy.py becomes thin:
+
+  * build MainWindow
+  * build control_api bridge
+  * build app_controller
+  * connect and start
+
+**Notes**
+
+  * Difficulty is read from control_api and treated as a session key.
+  * Duration may be None: ChartEngine must support open ended rolling sessions.
+  * If difficulty changes while PLAYING, app_controller chooses a policy:
+    * restart session immediately, or
+    * defer until next load. Either is fine, but it is app_controller policy, not control_api.
 ---
 
 ### main_window.py
@@ -226,20 +258,35 @@ Runs the web server alone for frontend development.
 ### control_api.py
 
 **Purpose**
-Thread-safe bridge between Flask handlers and the Qt controller.
+Qt first control integration that embeds the Flask web server in the Qt process and exposes user intent as Qt signals without any TCP cross access.
+
+**Key idea**
+Flask handlers update server state. control_api reads that state in process and emits Qt signals when it changes. Other modules never call Flask, never parse HTTP, never touch server globals.
+
+**Responsibilities**
+
+* Create and own the Flask app via web_server.
+* Poll status using the Flask in process test client (no TCP, no access log noise).
+* Diff snapshots and emit signals:
+
+  * video_changed (ControlStatus)
+  * difficulty_changed (str)
+  * state_changed (str)
+  * status_updated (ControlStatus)
+  * error_changed (str)
+* Provide access to the latest ControlStatus for consumers that need full context.
 
 **Integration**
 
-* Defines command types and validation
-* Enqueues commands for Qt thread consumption
-* Provides read-only “status snapshot” for the web UI:
+* app_controller connects to these signals and acts on them.
+* control_api does not control playback directly.
+* control_api remains the single source of truth for user selected difficulty and requested state.
 
-  * state, current video, time, difficulty
+**Notes**
 
-Implementation pattern:
-
-* Flask thread only touches control_api
-* Qt polls the queue on a QTimer and executes commands
+* Difficulty lives here.
+* Duration is read here when available and forwarded to app_controller as part of status.
+* No command queue is required because the authoritative intent is the status snapshot.
 
 ---
 

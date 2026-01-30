@@ -22,6 +22,9 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="app_controller.py" />
+    <Compile Include="chart_engine.py" />
+    <Compile Include="chart_generator_fast.py" />
     <Compile Include="chart_models.py" />
     <Compile Include="config.py" />
     <Compile Include="control_api.py" />
@@ -31,10 +34,13 @@
     <Compile Include="graphics_pack.py" />
     <Compile Include="input_router.py" />
     <Compile Include="judge.py" />
+    <Compile Include="library_index.py" />
     <Compile Include="main_window.py" />
     <Compile Include="note_scheduler.py" />
     <Compile Include="overlay_renderer.py" />
+    <Compile Include="paths.py" />
     <Compile Include="qr_code.py" />
+    <Compile Include="sm_store.py" />
     <Compile Include="steppy.py" />
     <Compile Include="test_chart.py" />
     <Compile Include="thumb_cache.py" />
