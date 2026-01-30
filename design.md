@@ -477,7 +477,7 @@ Generates a rolling chart for a fake duration and exports SM.
 ### chart_generator_fast.py
 
 **Purpose**
-Creates an instantly playable chart for any song without audio access, using a beat grid plus pattern heuristics.
+Creates an instantly playable chart for any song on youtube, using a beat grid plus pattern heuristics.
 
 **Integration**
 Inputs:

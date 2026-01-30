@@ -1,0 +1,24 @@
+#TITLE:Golden Test - Beginner;
+        #OFFSET:0.000000;
+        #BPMS:0.000=120.000;
+        #STEPPY_VIDEO_ID:test;
+        #STEPPY_GENERATOR_VERSION:0;
+        #STEPPY_SEED:0;
+        #STEPPY_DURATION_HINT:12.000;
+
+        #NOTES:
+             dance-single:
+             :
+             Beginner:
+             1:
+             0.000,0.000,0.000,0.000,0.000:
+        1000
+0000
+0100
+0000
+,
+0010
+0000
+0001
+0000
+        ;

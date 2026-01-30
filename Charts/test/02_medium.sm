@@ -1,0 +1,24 @@
+#TITLE:Golden Test - Medium;
+        #OFFSET:0.000000;
+        #BPMS:0.000=120.000;
+        #STEPPY_VIDEO_ID:test;
+        #STEPPY_GENERATOR_VERSION:0;
+        #STEPPY_SEED:0;
+        #STEPPY_DURATION_HINT:12.000;
+
+        #NOTES:
+             dance-single:
+             :
+             Medium:
+             1:
+             0.000,0.000,0.000,0.000,0.000:
+        1100
+0000
+0011
+0000
+,
+1001
+0000
+0110
+0000
+        ;

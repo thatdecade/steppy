@@ -1,0 +1,19 @@
+#TITLE:Golden Partial - Easy;
+        #OFFSET:0.000000;
+        #BPMS:0.000=120.000;
+        #STEPPY_VIDEO_ID:test_partial;
+        #STEPPY_GENERATOR_VERSION:0;
+        #STEPPY_SEED:0;
+        #STEPPY_DURATION_HINT:8.000;
+
+        #NOTES:
+             dance-single:
+             :
+             Easy:
+             1:
+             0.000,0.000,0.000,0.000,0.000:
+        1000
+0000
+0001
+0000
+        ;
