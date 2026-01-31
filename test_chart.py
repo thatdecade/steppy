@@ -1,60 +1,72 @@
+# -*- coding: utf-8 -*-
+########################
 # test_chart.py
+########################
+# Purpose:
+# - Build a small deterministic test chart for development and validation.
+# - Uses chart_models.NoteEvent for lightweight test data.
+#
+# Design notes:
+# - This is a test utility. Do not use chart_models in the runtime gameplay pipeline.
+#
+########################
+# Interfaces:
+# Public dataclasses:
+# - TestChart(difficulty: str, notes: list[chart_models.NoteEvent], duration_seconds: float)
+#
+# Public functions:
+# - build_test_chart(*, difficulty: str) -> TestChart
+#
+# Inputs:
+# - difficulty: str
+#
+# Outputs:
+# - A deterministic TestChart payload.
+#
+########################
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import List
 
-from chart_models import NoteEvent, NoteKind
+import chart_models
 
 
 @dataclass(frozen=True)
 class TestChart:
     difficulty: str
-    notes: List[NoteEvent]
+    notes: List[chart_models.NoteEvent]
     duration_seconds: float
 
 
 def build_test_chart(*, difficulty: str) -> TestChart:
-    normalized_difficulty = (difficulty or "easy").strip().lower() or "easy"
+    difficulty_text = str(difficulty or "easy").strip().lower() or "easy"
+    duration_seconds = 22.0
+    step_interval = 0.5 if difficulty_text == "easy" else 0.33
+    start_time = 2.0
 
-    if normalized_difficulty == "hard":
-        step_interval_seconds = 0.40
-        total_notes = 32
-    elif normalized_difficulty == "medium":
-        step_interval_seconds = 0.55
-        total_notes = 24
-    else:
-        normalized_difficulty = "easy"
-        step_interval_seconds = 0.75
-        total_notes = 16
+    notes: List[chart_models.NoteEvent] = []
+    lane_cycle = [0, 1, 2, 3]
+    time_seconds = start_time
+    lane_index = 0
 
-    lead_in_seconds = 2.5
+    while time_seconds < (duration_seconds - 1.0):
+        lane = lane_cycle[lane_index % len(lane_cycle)]
+        notes.append(chart_models.NoteEvent(time_seconds=float(time_seconds), lane=int(lane), kind=chart_models.NoteKind.TAP))
+        lane_index += 1
+        time_seconds += step_interval
 
-    # Deterministic lane pattern that covers all lanes and includes a few quick pairs.
-    lane_pattern = [
-        0, 1, 2, 3,
-        1, 0, 3, 2,
-        0, 2, 1, 3,
-        2, 3, 0, 1,
-    ]
+    return TestChart(difficulty=difficulty_text, notes=notes, duration_seconds=duration_seconds)
 
-    notes: List[NoteEvent] = []
-    current_time_seconds = lead_in_seconds
 
-    for note_index in range(total_notes):
-        lane = lane_pattern[note_index % len(lane_pattern)]
-        notes.append(NoteEvent(time_seconds=current_time_seconds, lane=lane, kind=NoteKind.TAP))
+def _run_unit_tests() -> None:
+    chart = build_test_chart(difficulty="easy")
+    assert chart.duration_seconds > 10.0
+    assert len(chart.notes) > 10
+    assert chart.notes[0].lane in (0, 1, 2, 3)
 
-        # Insert a few deterministic "double-tap-ish" moments on higher difficulties.
-        if normalized_difficulty in ("medium", "hard") and note_index in (6, 14, 22):
-            paired_lane = (lane + 2) % 4
-            notes.append(
-                NoteEvent(time_seconds=current_time_seconds + step_interval_seconds * 0.5, lane=paired_lane, kind=NoteKind.TAP)
-            )
 
-        current_time_seconds += step_interval_seconds
-
-    notes.sort(key=lambda note: (note.time_seconds, note.lane))
-    duration_seconds = max(10.0, (notes[-1].time_seconds + 3.0) if notes else 10.0)
-
-    return TestChart(difficulty=normalized_difficulty, notes=notes, duration_seconds=duration_seconds)
+if __name__ == "__main__":
+    _run_unit_tests()
+    print("test_chart.py: ok")

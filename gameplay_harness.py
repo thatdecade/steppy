@@ -1,402 +1,354 @@
-"""
-gameplay_harness.py
-
-Standalone harness for gameplay pipeline testing.
-
-Usage
-python -m gameplay_harness
-
-What it does
-- Loads a YouTube video via WebPlayerBridge
-- Runs a minimal gameplay pipeline (timing, scheduler, judge, overlay)
-- Provides basic controls (load, play, pause, resume, restart, stop)
-- Reads keyboard input on WASD as lanes 0..3
-
-Chart integration
-- Uses ChartEngine to resolve charts in this order:
-  1) Charts/<video_id>/ (curated)
-  2) ChartsAuto/<video_id>/ (cached auto)
-  3) If missing, generates a dummy chart via chart_generator_fast and caches it
-"""
+# -*- coding: utf-8 -*-
+########################
+# gameplay_harness.py
+########################
+# Purpose:
+# - Stable gameplay harness window for local testing and iteration.
+# - Integrates WebPlayerBridge + TimingModel + InputRouter + NoteScheduler + JudgeEngine + GameplayOverlayWidget.
+#
+# Design notes:
+# - This module is considered stable and should remain unchanged if at all possible.
+# - Other modules must adapt to this integration pattern.
+# - Uses TimingModel as the single source of truth for song time.
+#
+########################
+# Interfaces:
+# Public dataclasses:
+# - HarnessState(video_id: str, difficulty: str, bpm_guess: float, chart_source_kind: str, last_error: str, ...)
+#
+# Public classes:
+# - class GameplayHarnessWindow(PyQt6.QtWidgets.QMainWindow)
+#   - Owns the harness pipeline and attaches the WebPlayerBridge and overlay widget.
+#
+# Public functions:
+# - main() -> int
+#
+# Inputs:
+# - User enters a YouTube URL or id (via harness UI).
+# - Keyboard lane input (InputRouter handles QKeyEvent).
+# - Player timing updates (WebPlayerBridge.timeUpdated).
+#
+# Outputs:
+# - Visible gameplay overlay and score and judgement rendering.
+#
+########################
 
 from __future__ import annotations
 
-import sys
-import traceback
 from dataclasses import dataclass
-from typing import Optional
-
-from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtGui import QKeyEvent
-from PyQt6.QtWidgets import (
-    QApplication,
-    QCheckBox,
-    QComboBox,
-    QGridLayout,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QMainWindow,
-    QPushButton,
-    QSpinBox,
-    QVBoxLayout,
-    QWidget,
-)
-
-from chart_engine import ChartEngine, ChartResult
-from gameplay_models import InputEvent
-from graphics_pack import GraphicsPack
-from input_router import InputRouter
-from judge import JudgeEngine
-from note_scheduler import NoteScheduler
-from overlay_renderer import GameplayOverlayWidget, OverlayConfig
-from timing_model import TimingModel
-from web_player_bridge import WebPlayerBridge, extract_youtube_video_id
+import argparse
+from typing import Optional, Tuple, List
 
 
 @dataclass
 class HarnessState:
-    state_text: str = "unknown"
-    video_id: Optional[str] = None
+    video_id: str = "dQw4w9WgXcQ"
     difficulty: str = "easy"
     bpm_guess: float = 120.0
-    chart_source_kind: str = "unknown"
-    chart_path_text: str = ""
-
-
-class GameplayHarnessWindow(QMainWindow):
-    def __init__(self) -> None:
-        super().__init__()
-        self.setWindowTitle("Steppy Gameplay Harness")
-
-        self._ui_ready = False
-
-        self._timing_model = TimingModel()
-        self._harness_state = HarnessState()
-        self._chart_engine = ChartEngine()
-
-        self._harness_state.difficulty = "easy"
-
-        initial_chart_result = self._chart_engine.get_chart(
-            video_id="",
-            difficulty=self._harness_state.difficulty,
-            duration_seconds=None,
-        )
-        self._apply_chart_result(initial_chart_result)
-
-        self._player_bridge = WebPlayerBridge(self)
-
-        self._graphics_pack: Optional[GraphicsPack] = None
-        try:
-            self._graphics_pack = GraphicsPack()
-        except Exception as exception:
-            print(f"[harness] GraphicsPack init failed: {exception}", flush=True)
-            traceback.print_exc()
-            self._graphics_pack = None
-
-        overlay_config = OverlayConfig(bpm_guess=self._harness_state.bpm_guess)
-        self._overlay_widget = GameplayOverlayWidget(
-            timing_model=self._timing_model,
-            note_scheduler=self._note_scheduler,
-            judge_engine=self._judge_engine,
-            overlay_config=overlay_config,
-            graphics_pack=self._graphics_pack,
-            parent=self,
-        )
-
-        self._input_router = InputRouter(lambda: float(self._timing_model.song_time_seconds), self)
-        self._input_router.inputEvent.connect(self._on_input_event)
-
-        self._layers_layout: Optional[QGridLayout] = None
-        self._status_label: Optional[QLabel] = None
-
-        self._build_ui()
-        self._wire_player_signals()
-
-        self._tick_timer = QTimer(self)
-        self._tick_timer.setInterval(16)
-        self._tick_timer.timeout.connect(self._on_tick)
-        self._tick_timer.start()
-
-        self._ui_ready = True
-        self._set_state("unstarted")
-
-    def _apply_chart_result(self, chart_result: ChartResult) -> None:
-        self._chart = chart_result.chart
-        self._note_scheduler = NoteScheduler(self._chart)
-        self._judge_engine = JudgeEngine(self._note_scheduler)
-
-        bpm_guess_value = float(chart_result.bpm_guess)
-        if bpm_guess_value <= 0.0:
-            bpm_guess_value = 120.0
-
-        self._harness_state.bpm_guess = bpm_guess_value
-        self._harness_state.chart_source_kind = str(chart_result.source_kind)
-        self._harness_state.chart_path_text = str(chart_result.simfile_path) if chart_result.simfile_path else ""
-
-    def _load_chart_for_selection(self) -> None:
-        video_id_value = (self._harness_state.video_id or "").strip()
-        difficulty_value = (self._harness_state.difficulty or "easy").strip().lower() or "easy"
-
-        chart_result = self._chart_engine.get_chart(
-            video_id=video_id_value,
-            difficulty=difficulty_value,
-            duration_seconds=None,
-        )
-        self._apply_chart_result(chart_result)
-
-        overlay_config = OverlayConfig(bpm_guess=self._harness_state.bpm_guess)
-        new_overlay = GameplayOverlayWidget(
-            timing_model=self._timing_model,
-            note_scheduler=self._note_scheduler,
-            judge_engine=self._judge_engine,
-            overlay_config=overlay_config,
-            graphics_pack=self._graphics_pack,
-            parent=self,
-        )
-        self._replace_overlay_widget(new_overlay)
-
-        try:
-            self._input_router.inputEvent.disconnect(self._on_input_event)
-        except Exception as exception:
-            print(f"[harness] Failed disconnecting inputEvent signal: {exception}", flush=True)
-            traceback.print_exc()
-
-        self._input_router = InputRouter(lambda: float(self._timing_model.song_time_seconds), self)
-        self._input_router.inputEvent.connect(self._on_input_event)
-
-        self._set_state(self._harness_state.state_text)
-
-    def _build_ui(self) -> None:
-        root_widget = QWidget(self)
-        self.setCentralWidget(root_widget)
-
-        root_layout = QVBoxLayout(root_widget)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
-
-        layers_host = QWidget(root_widget)
-        layers_layout = QGridLayout(layers_host)
-        layers_layout.setContentsMargins(0, 0, 0, 0)
-        layers_layout.setSpacing(0)
-
-        layers_layout.addWidget(self._player_bridge, 0, 0)
-        layers_layout.addWidget(self._overlay_widget, 0, 0)
-
-        self._layers_layout = layers_layout
-        root_layout.addWidget(layers_host, 1)
-
-        controls_container = QWidget(root_widget)
-        controls_layout = QHBoxLayout(controls_container)
-        controls_layout.setContentsMargins(8, 6, 8, 6)
-        controls_layout.setSpacing(8)
-
-        self._status_label = QLabel("", controls_container)
-        self._status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-
-        self._video_id_input = QLineEdit(controls_container)
-        self._video_id_input.setPlaceholderText("YouTube video id or URL")
-        self._video_id_input.setText("dQw4w9WgXcQ")
-        self._video_id_input.setMinimumWidth(320)
-
-        self._difficulty_combo = QComboBox(controls_container)
-        self._difficulty_combo.addItems(["easy", "medium", "hard"])
-        self._difficulty_combo.setCurrentText(self._harness_state.difficulty)
-        self._difficulty_combo.currentTextChanged.connect(self._on_difficulty_changed)
-
-        self._button_load = QPushButton("Load", controls_container)
-        self._button_play = QPushButton("Play", controls_container)
-        self._button_pause = QPushButton("Pause", controls_container)
-        self._button_resume = QPushButton("Resume", controls_container)
-        self._button_restart = QPushButton("Restart", controls_container)
-        self._button_stop = QPushButton("Stop", controls_container)
-
-        self._button_load.clicked.connect(self._on_clicked_load)
-        self._button_play.clicked.connect(self._on_clicked_play)
-        self._button_pause.clicked.connect(self._on_clicked_pause)
-        self._button_resume.clicked.connect(self._on_clicked_resume)
-        self._button_restart.clicked.connect(self._on_clicked_restart)
-        self._button_stop.clicked.connect(self._on_clicked_stop)
-
-        self._mute_checkbox = QCheckBox("Mute", controls_container)
-        self._mute_checkbox.setChecked(False)
-        self._mute_checkbox.stateChanged.connect(self._on_mute_changed)
-
-        self._av_offset_spinbox = QSpinBox(controls_container)
-        self._av_offset_spinbox.setRange(-500, 500)
-        self._av_offset_spinbox.setValue(0)
-        self._av_offset_spinbox.setSuffix(" ms")
-        self._av_offset_spinbox.valueChanged.connect(self._on_av_offset_changed)
-
-        controls_layout.addWidget(self._video_id_input, 1)
-        controls_layout.addWidget(self._difficulty_combo)
-
-        controls_layout.addWidget(self._button_load)
-        controls_layout.addWidget(self._button_play)
-        controls_layout.addWidget(self._button_pause)
-        controls_layout.addWidget(self._button_resume)
-        controls_layout.addWidget(self._button_restart)
-        controls_layout.addWidget(self._button_stop)
-
-        controls_layout.addWidget(self._mute_checkbox)
-        controls_layout.addWidget(QLabel("AV offset", controls_container))
-        controls_layout.addWidget(self._av_offset_spinbox)
-        controls_layout.addWidget(self._status_label, 2)
-
-        root_layout.addWidget(controls_container, 0)
-
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        root_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        layers_host.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-
-    def _wire_player_signals(self) -> None:
-        self._player_bridge.timeUpdated.connect(self._on_player_time_updated)
-        self._player_bridge.stateChanged.connect(self._on_player_state_changed)
-        self._player_bridge.errorOccurred.connect(self._on_player_error)
-
-    def _set_state(self, state_text: str) -> None:
-        self._harness_state.state_text = (state_text or "unknown").strip() or "unknown"
-        self._overlay_widget.set_state_text(self._harness_state.state_text)
-
-        status_label = getattr(self, "_status_label", None)
-        if status_label is None:
-            return
-
-        assets_status = "assets ok" if self._graphics_pack is not None else "assets missing"
-
-        chart_source_text = self._harness_state.chart_source_kind
-        if self._harness_state.chart_path_text:
-            chart_source_text += " " + self._harness_state.chart_path_text
-
-        status_label.setText(
-            "state "
-            + self._harness_state.state_text
-            + "  player "
-            + f"{self._timing_model.player_time_seconds:.3f}"
-            + "  song "
-            + f"{self._timing_model.song_time_seconds:.3f}"
-            + "  diff "
-            + self._harness_state.difficulty
-            + "  bpm "
-            + f"{self._harness_state.bpm_guess:.1f}"
-            + "  chart "
-            + chart_source_text
-            + "  "
-            + assets_status
-        )
-
-    def _on_player_time_updated(self, player_time_seconds: float) -> None:
-        self._timing_model.update_player_time_seconds(float(player_time_seconds))
-
-    def _on_player_state_changed(self, player_state_info: object) -> None:
-        try:
-            state_name = str(getattr(player_state_info, "name", "unknown"))
-        except Exception:
-            state_name = "unknown"
-        self._set_state(state_name)
-
-    def _on_player_error(self, error_text: str) -> None:
-        self._set_state("error")
-        status_label = self._status_label
-        if status_label is not None:
-            status_label.setText("player error: " + (error_text or "(unknown)"))
-
-    def _on_tick(self) -> None:
-        is_playing = self._harness_state.state_text == "playing"
-        if is_playing:
-            self._judge_engine.update_for_time(self._timing_model.song_time_seconds)
-        self._overlay_widget.update()
-        self._set_state(self._harness_state.state_text)
-
-    def _on_input_event(self, input_event: object) -> None:
-        if not isinstance(input_event, InputEvent):
-            return
-        self._overlay_widget.flash_lane(input_event.lane)
-        self._judge_engine.on_input_event(input_event)
-        self._overlay_widget.update()
-
-    def _on_clicked_load(self) -> None:
-        parsed_video_id = extract_youtube_video_id(self._video_id_input.text())
-        if not parsed_video_id:
-            status_label = self._status_label
-            if status_label is not None:
-                status_label.setText("Invalid video id")
-            return
-
-        self._harness_state.video_id = parsed_video_id
-
-        self._load_chart_for_selection()
-        self._judge_engine.reset()
-        self._note_scheduler.reset()
-
-        self._player_bridge.load_video(parsed_video_id, start_seconds=0.0, autoplay=False)
-        self._set_state("cued")
-
-    def _on_clicked_play(self) -> None:
-        self._player_bridge.play()
-
-    def _on_clicked_pause(self) -> None:
-        self._player_bridge.pause()
-
-    def _on_clicked_resume(self) -> None:
-        self._player_bridge.play()
-
-    def _on_clicked_restart(self) -> None:
-        self._judge_engine.reset()
-        self._note_scheduler.reset()
-        self._player_bridge.seek(0.0)
-        self._player_bridge.play()
-
-    def _on_clicked_stop(self) -> None:
-        self._player_bridge.pause()
-        self._player_bridge.seek(0.0)
-        self._set_state("stopped")
-
-    def _on_mute_changed(self, _state: int) -> None:
-        self._player_bridge.set_muted(self._mute_checkbox.isChecked())
-
-    def _on_av_offset_changed(self, value_milliseconds: int) -> None:
-        self._timing_model.set_av_offset_seconds(float(value_milliseconds) / 1000.0)
-
-    def _replace_overlay_widget(self, new_overlay_widget: GameplayOverlayWidget) -> None:
-        old_overlay = self._overlay_widget
-        self._overlay_widget = new_overlay_widget
-
-        layers_layout = self._layers_layout
-        if layers_layout is None:
-            return
-
-        layers_layout.removeWidget(old_overlay)
-        old_overlay.setParent(None)
-        old_overlay.deleteLater()
-
-        layers_layout.addWidget(self._overlay_widget, 0, 0)
-
-    def _on_difficulty_changed(self, difficulty_text: str) -> None:
-        difficulty_normalized = (difficulty_text or "easy").strip().lower() or "easy"
-        self._harness_state.difficulty = difficulty_normalized
-
-        self._load_chart_for_selection()
-
-    def keyPressEvent(self, event: QKeyEvent) -> None:
-        if self._input_router.handle_key_press(event):
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-    def keyReleaseEvent(self, event: QKeyEvent) -> None:
-        if self._input_router.handle_key_release(event):
-            event.accept()
-            return
-        super().keyReleaseEvent(event)
+    chart_source_kind: str = "test"
+    last_error: str = ""
+    is_paused: bool = False
+
+
+def _build_gameplay_chart_from_test_chart(difficulty: str):
+    import gameplay_models
+    import test_chart
+
+    test_payload = test_chart.build_test_chart(difficulty=difficulty)
+    notes = [gameplay_models.NoteEvent(time_seconds=float(n.time_seconds), lane=int(n.lane)) for n in test_payload.notes]
+    chart = gameplay_models.Chart(difficulty=str(test_payload.difficulty), notes=notes, duration_seconds=float(test_payload.duration_seconds))
+    return chart
+
+
+def _run_chunk_tests() -> None:
+    import gameplay_models
+    import note_scheduler
+    import judge
+    import timing_model
+
+    chart = _build_gameplay_chart_from_test_chart("easy")
+    scheduler = note_scheduler.NoteScheduler(chart)
+    windows = judge.JudgementWindows(perfect_seconds=0.03, great_seconds=0.07, good_seconds=0.12, miss_seconds=0.2)
+    engine = judge.JudgeEngine(scheduler, windows)
+
+    # Determinism: scheduler ordering by (time, lane)
+    all_notes = scheduler.visible_notes(song_time_seconds=5.0, lookback_seconds=999.0, lookahead_seconds=999.0)
+    ordered = [(n.note_event.time_seconds, n.note_event.lane) for n in all_notes]
+    assert ordered == sorted(ordered)
+
+    # TimingModel invariants
+    timing = timing_model.TimingModel()
+    timing.set_av_offset_seconds(-0.25)
+    timing.update_player_time_seconds(-1.0)
+    assert timing.player_time_seconds() == 0.0
+    assert abs(timing.song_time_seconds() - (-0.25)) < 1e-9
+    snap = timing.snapshot()
+    assert abs(snap.song_time_seconds - timing.song_time_seconds()) < 1e-9
+
+    # Input -> judgement path (perfect at exact time)
+    first_note = ordered[0]
+    first_note_time = float(first_note[0])
+    first_note_lane = int(first_note[1])
+    hit = engine.on_input_event(gameplay_models.InputEvent(time_seconds=first_note_time, lane=first_note_lane))
+    assert hit is not None
+    assert hit.judgement == "perfect"
+    assert engine.score_state().score == 2
+
+    # Stray press is ignored (returns None)
+    stray = engine.on_input_event(gameplay_models.InputEvent(time_seconds=first_note_time, lane=(first_note_lane + 1) % 4))
+    assert stray is None
+
+
+
+    # Misses do not re-emit for the same note.
+    minimal_chart = gameplay_models.Chart(
+        difficulty="test",
+        notes=[gameplay_models.NoteEvent(time_seconds=1.0, lane=0)],
+        duration_seconds=3.0,
+    )
+    minimal_scheduler = note_scheduler.NoteScheduler(minimal_chart)
+    minimal_engine = judge.JudgeEngine(minimal_scheduler, windows)
+
+    misses_first = minimal_engine.update_for_time(song_time_seconds=1.0 + windows.miss_seconds + 0.01)
+    assert len(misses_first) == 1
+    misses_second = minimal_engine.update_for_time(song_time_seconds=10.0)
+    assert len(misses_second) == 0
+
+
+
+def _run_gui() -> int:
+    from PyQt6.QtCore import Qt, QEvent, QObject, pyqtSignal
+    from PyQt6.QtWidgets import (
+        QApplication,
+        QHBoxLayout,
+        QLabel,
+        QLineEdit,
+        QMainWindow,
+        QPushButton,
+        QVBoxLayout,
+        QWidget,
+        QComboBox,
+    )
+
+    import gameplay_models
+    import timing_model
+    import note_scheduler
+    import judge
+    import input_router
+    import overlay_renderer
+    import graphics_pack
+    import web_player_bridge
+
+    class HarnessSignals(QObject):
+        strayPress = pyqtSignal(object)
+
+    class GameplayHarnessWindow(QMainWindow):
+        def __init__(self) -> None:
+            super().__init__()
+            self.setWindowTitle("Steppy Gameplay Harness")
+
+            self._state = HarnessState()
+            self._signals = HarnessSignals(self)
+
+            self._timing = timing_model.TimingModel()
+            self._scheduler: Optional[note_scheduler.NoteScheduler] = None
+            self._judge: Optional[judge.JudgeEngine] = None
+
+            self._bridge = web_player_bridge.WebPlayerBridge(self)
+            self._bridge.timeUpdated.connect(self._on_player_time_updated)
+            self._bridge.stateChanged.connect(self._on_player_state_changed)
+            self._bridge.errorOccurred.connect(self._on_player_error)
+
+            self._overlay = overlay_renderer.GameplayOverlayWidget(self._timing.song_time_seconds, parent=self)
+            self._overlay.set_overlay_mode(overlay_renderer.OverlayMode.PLAY)
+
+            self._router = input_router.InputRouter(self._timing.song_time_seconds, parent=self)
+            self._router.inputEvent.connect(self._on_input_event)
+
+            try:
+                pack = graphics_pack.GraphicsPack()
+                self._overlay.set_graphics_pack(pack)
+            except Exception as exc:
+                self._state.last_error = f"GraphicsPack failed: {exc}"
+                self._overlay.set_graphics_pack(None)
+
+            root = QWidget(self)
+            layout = QVBoxLayout(root)
+
+            controls = QWidget(root)
+            controls_layout = QHBoxLayout(controls)
+
+            self._video_edit = QLineEdit(self._state.video_id, controls)
+            self._difficulty_combo = QComboBox(controls)
+            self._difficulty_combo.addItems(["easy", "medium"])
+            self._difficulty_combo.setCurrentText(self._state.difficulty)
+
+            load_button = QPushButton("Load", controls)
+            play_button = QPushButton("Play", controls)
+            pause_button = QPushButton("Pause", controls)
+            restart_button = QPushButton("Restart", controls)
+            stop_button = QPushButton("Stop", controls)
+
+            load_button.clicked.connect(self._on_load_clicked)
+            play_button.clicked.connect(self._on_play_clicked)
+            pause_button.clicked.connect(self._on_pause_clicked)
+            restart_button.clicked.connect(self._on_restart_clicked)
+            stop_button.clicked.connect(self._on_stop_clicked)
+
+            self._status_label = QLabel("", controls)
+            self._status_label.setStyleSheet("color: white;")
+
+            controls_layout.addWidget(QLabel("Video:", controls))
+            controls_layout.addWidget(self._video_edit)
+            controls_layout.addWidget(QLabel("Difficulty:", controls))
+            controls_layout.addWidget(self._difficulty_combo)
+            controls_layout.addWidget(load_button)
+            controls_layout.addWidget(play_button)
+            controls_layout.addWidget(pause_button)
+            controls_layout.addWidget(restart_button)
+            controls_layout.addWidget(stop_button)
+
+            layout.addWidget(controls)
+            layout.addWidget(self._bridge, stretch=3)
+            layout.addWidget(self._overlay, stretch=4)
+            layout.addWidget(self._status_label)
+
+            #root.setStyleSheet("background: #101014;")
+            self.setCentralWidget(root)
+
+            self._miss_timer = self.startTimer(16)
+
+        def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # type: ignore[override]
+            if event.type() == QEvent.Type.KeyPress:
+                if self._router.handle_key_press(event):  # type: ignore[arg-type]
+                    return True
+            if event.type() == QEvent.Type.KeyRelease:
+                if self._router.handle_key_release(event):  # type: ignore[arg-type]
+                    return True
+            if event.type() in (QEvent.Type.WindowDeactivate, QEvent.Type.FocusOut):
+                self._router.clear_pressed_keys()
+            return super().eventFilter(watched, event)
+
+        def timerEvent(self, event) -> None:  # type: ignore[override]
+            if event.timerId() != self._miss_timer:
+                return
+            if self._state.is_paused:
+                return
+            if self._judge is not None:
+                self._judge.update_for_time(self._timing.song_time_seconds())
+
+        def _set_status(self, text: str) -> None:
+            self._status_label.setText(str(text))
+            self._overlay.set_state_text(str(text))
+
+        def _on_load_clicked(self) -> None:
+            video_id_or_url = str(self._video_edit.text()).strip()
+            difficulty = str(self._difficulty_combo.currentText()).strip().lower()
+            self._state.video_id = video_id_or_url or "test"
+            self._state.difficulty = difficulty or "easy"
+            self._state.last_error = ""
+
+            self._state.is_paused = False
+            self._timing.update_player_time_seconds(0.0)
+
+            if self._state.video_id.strip().lower() == "test":
+                chart = _build_gameplay_chart_from_test_chart(self._state.difficulty)
+                self._scheduler = note_scheduler.NoteScheduler(chart)
+                windows = judge.JudgementWindows(perfect_seconds=0.03, great_seconds=0.07, good_seconds=0.12, miss_seconds=0.2)
+                self._judge = judge.JudgeEngine(self._scheduler, windows)
+                self._overlay.set_overlay_mode(overlay_renderer.OverlayMode.PLAY)
+                self._overlay.set_play_mode_objects(note_scheduler_obj=self._scheduler, judge_engine_obj=self._judge)
+                self._state.chart_source_kind = "test"
+                self._set_status("Play mode (test chart)")
+            else:
+                self._scheduler = None
+                self._judge = None
+                self._overlay.set_overlay_mode(overlay_renderer.OverlayMode.LEARNING)
+                self._overlay.set_play_mode_objects(note_scheduler_obj=None, judge_engine_obj=None)
+                self._state.chart_source_kind = "learning"
+                self._set_status("Learning overlay (no chart in this chunk)")
+
+            self._bridge.load_video(video_id_or_url=self._state.video_id, start_seconds=0.0, autoplay=True)
+            self.installEventFilter(self)
+
+        def _on_play_clicked(self) -> None:
+            self._state.is_paused = False
+            self._bridge.play()
+            if self._state.chart_source_kind == "test":
+                self._set_status("Playing")
+            else:
+                self._set_status("Learning (playing)")
+
+        def _on_pause_clicked(self) -> None:
+            self._state.is_paused = True
+            self._bridge.pause()
+            self._set_status("Paused (inputs flash only)")
+
+        def _on_restart_clicked(self) -> None:
+            # Restart-only backward time contract: we restart and reset pipeline.
+            self._bridge.seek(0.0)
+            self._timing.update_player_time_seconds(0.0)
+            if self._scheduler is not None:
+                self._scheduler.reset()
+            if self._judge is not None:
+                self._judge.reset()
+            self._state.is_paused = False
+            self._set_status("Restarted")
+
+        def _on_stop_clicked(self) -> None:
+            self._state.is_paused = True
+            self._bridge.pause()
+            self._set_status("Stopped")
+
+        def _on_player_time_updated(self, player_time_seconds: float) -> None:
+            previous = self._timing.player_time_seconds()
+            self._timing.update_player_time_seconds(float(player_time_seconds))
+            current = self._timing.player_time_seconds()
+
+            if current + 0.0001 < previous:
+                # Recommended default: treat any backward jump as restart.
+                self._on_restart_clicked()
+
+        def _on_player_state_changed(self, info) -> None:
+            if getattr(info, "is_ended", False):
+                self._set_status("Ended")
+                self._state.is_paused = True
+
+        def _on_player_error(self, message: str) -> None:
+            self._state.last_error = str(message)
+            self._set_status(f"Player error: {message}")
+
+        def _on_input_event(self, input_event: gameplay_models.InputEvent) -> None:
+            self._overlay.on_input_event(input_event)
+
+            if self._state.is_paused:
+                return
+
+            if self._judge is not None:
+                judgement_event = self._judge.on_input_event(input_event)
+                if judgement_event is None:
+                    self._signals.strayPress.emit(input_event)
+
+    app = QApplication([])
+    window = GameplayHarnessWindow()
+    window.resize(980, 820)
+    window.show()
+    return int(app.exec())
+
+
+def build_argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run-tests", action="store_true", help="Run pure logic tests (no Qt).")
+    return parser
 
 
 def main() -> int:
-    qt_application = QApplication(sys.argv)
-    window = GameplayHarnessWindow()
-    window.resize(1280, 800)
-    window.show()
-    return int(qt_application.exec())
+    args = build_argument_parser().parse_args()
+    if args.run_tests:
+        _run_chunk_tests()
+        print("Chunk tests passed.")
+        return 0
+    return _run_gui()
 
 
 if __name__ == "__main__":

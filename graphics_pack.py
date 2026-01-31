@@ -1,25 +1,38 @@
 # -*- coding: utf-8 -*-
-"""
-graphics_pack.py
-
-Loads pre-rendered gameplay art from images/image_map.json and files packed in images/images.zip.
-
-Temp cache behavior:
-- On init, ensure cached assets exist in a temp directory.
-- If missing, unpack from images/images.zip (or images/image.zip) into the cache.
-- Resolve all asset file paths relative to the temp cache root.
-
-Map file paths can be flat ("receptor/down/frame_0.png") or prefixed ("images/receptor/...").
-If prefixed, the "images/" segment is stripped at runtime.
-
-Design plan public API contract:
-
-- map_file_path() -> pathlib.Path
-- cache_root_dir() -> pathlib.Path
-- draw_receptor(..., judgement: Optional[str]) -> None
-- draw_tap_note(...) -> None
-- draw_tap_explosion(..., judgement: Optional[str], song_time_seconds: float, bpm_guess: float) -> None
-"""
+########################
+# graphics_pack.py
+########################
+# Purpose:
+# - Stable sprite and asset pack loader and renderer for gameplay UI.
+# - Loads packaged image frames and draws receptors, notes, and explosions into a QPainter.
+#
+# Design notes:
+# - This module is a critical dependency for gameplay_harness.py and web_server.py integrations.
+# - Treat the public draw_* methods as strict rendering contracts.
+# - Keep asset lookup and caching internal to avoid leaking file layout to other modules.
+#
+########################
+# Interfaces:
+# Public dataclasses:
+# - FrameSpec(file_path: pathlib.Path, duration_beats: float)
+#
+# Public classes:
+# - class GraphicsPack
+#   - map_file_path() -> pathlib.Path
+#   - cache_root_dir() -> pathlib.Path
+#   - draw_receptor(painter: QPainter, *, lane_index: int, center: QPointF, size_pixels: float, flash_active: bool,
+#                  song_time_seconds: float, bpm_guess: float, judgement: Optional[str]) -> None
+#   - draw_tap_note(painter: QPainter, *, lane_index: int, center: QPointF, size_pixels: float) -> None
+#   - draw_tap_explosion(painter: QPainter, *, lane_index: int, center: QPointF, size_pixels: float, judgement: Optional[str],
+#                        song_time_seconds: float, bpm_guess: float) -> None
+#
+# Inputs:
+# - QPainter drawing target and lane/time parameters.
+#
+# Outputs:
+# - Rendered sprites on the provided painter.
+#
+########################
 
 from __future__ import annotations
 
@@ -51,7 +64,7 @@ class GraphicsPack:
         self._assets_root_dir = self._cache_root_dir
 
         self._receptor_frames_by_direction: Dict[str, List[FrameSpec]] = {}
-        self._tap_note_paths_by_color_and_direction: Dict[str, Dict[str, Path]] = {}
+        self._tap_note_paths_by_direction: Dict[str, Path] = {}
         self._tap_explosion_bright_path: Optional[Path] = None
         self._tap_explosion_dim_paths_by_direction: Dict[str, Path] = {}
 
@@ -99,18 +112,6 @@ class GraphicsPack:
         raise FileNotFoundError("Missing images/images.zip (or images/image.zip)")
 
     def _ensure_temp_image_cache_ready(self) -> Path:
-        """
-        Cache layout:
-        <temp>/steppy/image_cache_v1/
-          READY.txt
-          receptor/
-          tap_note/
-          explosions/
-          hold/
-          roll/
-          tap_lift/
-          tap_mine/
-        """
         cache_version = "v1"
         temp_dir = Path(tempfile.gettempdir())
         cache_root_dir = temp_dir / "steppy" / f"image_cache_{cache_version}"
@@ -189,30 +190,21 @@ class GraphicsPack:
                 if duration_beats <= 0.0:
                     duration_beats = 0.5
                 normalized = self._normalize_relative_asset_path(relative_file)
-                parsed_frames.append(
-                    FrameSpec(
-                        file_path=self._assets_root_dir / normalized,
-                        duration_beats=duration_beats,
-                    )
-                )
+                parsed_frames.append(FrameSpec(file_path=self._assets_root_dir / normalized, duration_beats=duration_beats))
             if parsed_frames:
                 self._receptor_frames_by_direction[str(direction_name)] = parsed_frames
 
+        # Public API draw_tap_note does not accept note_time_seconds, so choose a stable default variant.
         tap_note = elements.get("tap_note", {})
-        for color_key, direction_map in tap_note.items():
-            color_text = str(color_key).strip()
-            if not color_text:
-                continue
-            direction_paths: Dict[str, Path] = {}
-            if isinstance(direction_map, dict):
-                for direction_name, relative_file in direction_map.items():
-                    relative_file_text = str(relative_file or "").strip()
-                    if not relative_file_text:
-                        continue
-                    normalized = self._normalize_relative_asset_path(relative_file_text)
-                    direction_paths[str(direction_name)] = self._assets_root_dir / normalized
-            if direction_paths:
-                self._tap_note_paths_by_color_and_direction[color_text] = direction_paths
+        default_color_key = "03"
+        default_map = tap_note.get(default_color_key, {})
+        if isinstance(default_map, dict):
+            for direction_name, relative_file in default_map.items():
+                relative_file_text = str(relative_file or "").strip()
+                if not relative_file_text:
+                    continue
+                normalized = self._normalize_relative_asset_path(relative_file_text)
+                self._tap_note_paths_by_direction[str(direction_name)] = self._assets_root_dir / normalized
 
         tap_explosion = elements.get("tap_explosion", {})
         bright_file = str(tap_explosion.get("bright", "")).strip()
@@ -290,48 +282,12 @@ class GraphicsPack:
             return frames[0].file_path
 
         phase_beats = (float(song_time_seconds) / seconds_per_beat) % total_beats
-        accumulated_beats = 0.0
+        accumulated = 0.0
         for frame_spec in frames:
-            accumulated_beats += float(frame_spec.duration_beats)
-            if phase_beats <= accumulated_beats:
+            accumulated += float(frame_spec.duration_beats)
+            if phase_beats <= accumulated:
                 return frame_spec.file_path
         return frames[-1].file_path
-
-    def _pick_tap_note_path(self, lane_index: int) -> Optional[Path]:
-        """
-        Plan-aligned draw_tap_note does not receive note timing.
-        We choose a deterministic color variant based on lane_index so callers can remain simple.
-        """
-        direction = self._direction_for_lane(lane_index)
-
-        all_color_keys = sorted(self._tap_note_paths_by_color_and_direction.keys())
-        if not all_color_keys:
-            return None
-
-        preferred_index = int(lane_index) % len(all_color_keys)
-        preferred_color_key = all_color_keys[preferred_index]
-        direction_paths = self._tap_note_paths_by_color_and_direction.get(preferred_color_key)
-
-        if not direction_paths:
-            direction_paths = self._tap_note_paths_by_color_and_direction.get("03")
-
-        if not direction_paths:
-            direction_paths = self._tap_note_paths_by_color_and_direction.get(all_color_keys[0])
-
-        if not direction_paths:
-            return None
-
-        return direction_paths.get(direction) or direction_paths.get("Down")
-
-    def _pick_tap_explosion_path(self, lane_index: int, judgement: Optional[str]) -> Optional[Path]:
-        direction = self._direction_for_lane(lane_index)
-        judgement_text = str(judgement or "").strip().lower()
-        use_bright = judgement_text in {"perfect", "great"}
-
-        if use_bright and self._tap_explosion_bright_path is not None:
-            return self._tap_explosion_bright_path
-
-        return self._tap_explosion_dim_paths_by_direction.get(direction) or self._tap_explosion_bright_path
 
     def draw_receptor(
         self,
@@ -345,21 +301,15 @@ class GraphicsPack:
         bpm_guess: float,
         judgement: Optional[str],
     ) -> None:
+        # judgement is currently unused by available assets.
+        _ = judgement
         direction = self._direction_for_lane(lane_index)
         frame_path = self._pick_receptor_frame_path(direction, song_time_seconds, bpm_guess)
         if frame_path is None:
             return
 
-        judgement_text = str(judgement or "").strip().lower()
-        judgement_multiplier = 1.0
-        if judgement_text == "good":
-            judgement_multiplier = 0.92
-        elif judgement_text == "miss":
-            judgement_multiplier = 0.84
-
         painter.save()
-        base_opacity = 1.0 if flash_active else 0.78
-        painter.setOpacity(painter.opacity() * base_opacity * judgement_multiplier)
+        painter.setOpacity(painter.opacity() * (1.0 if flash_active else 0.78))
         pixmap = self._scaled_pixmap(frame_path, size_pixels)
         self._draw_centered_pixmap(painter, pixmap, center)
         painter.restore()
@@ -372,10 +322,10 @@ class GraphicsPack:
         center: QPointF,
         size_pixels: float,
     ) -> None:
-        file_path = self._pick_tap_note_path(lane_index)
+        direction = self._direction_for_lane(lane_index)
+        file_path = self._tap_note_paths_by_direction.get(direction) or self._tap_note_paths_by_direction.get("Down")
         if file_path is None:
             return
-
         pixmap = self._scaled_pixmap(file_path, size_pixels)
         self._draw_centered_pixmap(painter, pixmap, center)
 
@@ -390,22 +340,23 @@ class GraphicsPack:
         song_time_seconds: float,
         bpm_guess: float,
     ) -> None:
-        file_path = self._pick_tap_explosion_path(lane_index, judgement)
+        # song_time_seconds and bpm_guess are currently unused by available assets.
+        _ = song_time_seconds
+        _ = bpm_guess
+
+        judgement_text = str(judgement or "").strip().lower()
+        direction = self._direction_for_lane(lane_index)
+
+        use_bright = judgement_text in {"perfect", "great"}
+        file_path: Optional[Path] = None
+
+        if use_bright and self._tap_explosion_bright_path is not None:
+            file_path = self._tap_explosion_bright_path
+        else:
+            file_path = self._tap_explosion_dim_paths_by_direction.get(direction)
+
         if file_path is None:
             return
 
-        safe_bpm = float(bpm_guess) if float(bpm_guess) > 0.0 else 120.0
-        seconds_per_beat = 60.0 / safe_bpm
-
-        beat_phase = (float(song_time_seconds) / seconds_per_beat) % 1.0
-        decay_beats = 0.35
-        opacity_multiplier = 1.0 - min(1.0, beat_phase / decay_beats)
-
-        if opacity_multiplier <= 0.0:
-            return
-
-        painter.save()
-        painter.setOpacity(painter.opacity() * opacity_multiplier)
         pixmap = self._scaled_pixmap(file_path, size_pixels)
         self._draw_centered_pixmap(painter, pixmap, center)
-        painter.restore()
