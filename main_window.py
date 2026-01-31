@@ -1,33 +1,54 @@
-"""\
-main_window.py
-
-Single window UI surface for idle, playback, and overlay.
-
-Integration
-- Loads UI from main_window_ui.py generated from main_window_ui.ui.
-- Hosts embedded web video player.
-- Hosts gameplay overlay above the player.
-- Hosts an idle overlay (splash and QR card) above everything when idle.
-- Optional demo controls panel can be toggled while idle.
-
-Public API used by AppController
-- show_idle(), hide_idle()
-- set_idle_qr(image)
-- set_current_video_id(video_id)
-- current_video_id (property)
-- load_video(video_id, autoplay=False)
-- play(), pause(), seek(seconds)
-- set_gameplay_overlay_widget(widget)
-- set_demo_controls_widget(widget)
-- set_demo_controls_visible(visible)
-- is_playing_state()
-- set_key_press_handler(handler)
-
-Standalone usage
-python -m main_window
-
-No command line arguments are required or used.
-"""
+# -*- coding: utf-8 -*-
+########################
+# main_window.py
+########################
+# Purpose:
+# - Primary Qt window and UI host.
+# - Owns its menus and local window behaviors, and hosts a single central gameplay frame (idle or gameplay).
+#
+# Design notes:
+# - MainWindow should not decide demo mode or emit application mode switches.
+# - MainWindow may subscribe to InputRouter and control status signals via external wiring.
+# - Central frame hosting is the primary UI contract: attach or remove the current QFrame/QWidget.
+#
+########################
+# Interfaces:
+# Public classes:
+# - class MainWindow(PyQt6.QtWidgets.QMainWindow)
+#   - UI hosting:
+#     - set_gameplay_overlay_widget(widget: Optional[QWidget]) -> None
+#     - set_demo_controls_widget(widget: Optional[QWidget]) -> None
+#     - set_demo_controls_visible(is_visible: bool) -> None
+#     - show_idle() -> None
+#     - hide_idle() -> None
+#     - set_idle_qr(qimage: QImage) -> None
+#   - Playback passthrough helpers:
+#     - load_video(video_id_or_url: str, start_seconds: float = 0.0, autoplay: bool = True) -> None
+#     - play() -> None, pause() -> None, seek(seconds: float) -> None
+#   - State helpers:
+#     - current_video_id() -> Optional[str]
+#     - set_current_video_id(video_id: Optional[str]) -> None
+#     - is_playing_state() -> bool
+#     - set_demo_mode_enabled(is_enabled: bool) -> None
+#   - Menu actions:
+#     - on_action_fullscreen_toggle(), on_action_preferences(), on_action_exit()
+#
+# Signals (current implementation):
+# - demoModeChanged(bool)
+#
+# Inputs:
+# - QKeyEvent, menu actions, and externally wired control signals.
+#
+# Outputs:
+# - Manages Qt widgets and delegates playback to the embedded WebPlayerBridge.
+#
+########################
+# Unit Tests:
+# pip install PyQt6 qrcode
+# - Keep as manual UI smoke:
+#   - python main_window.py
+# - Prefer AppController integration tests for most behaviors, since MainWindow should stay thin.
+########################
 
 from __future__ import annotations
 
@@ -89,6 +110,7 @@ class MainWindow(QMainWindow):
         self._kiosk_mode = bool(kiosk_mode)
         self._apply_kiosk_settings(self._kiosk_mode)
 
+        # Host for the layer stack: player, overlay layer, splash (idle).
         self._layers_host = QWidget(self.ui.centralwidget)
         self._layers_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -96,12 +118,12 @@ class MainWindow(QMainWindow):
         layers_layout.setContentsMargins(0, 0, 0, 0)
         layers_layout.setSpacing(0)
 
+        # The splashFrame and splashImageLabel are defined in the .ui and are the authoritative idle layout.
         self.ui.splashFrame.setParent(self._layers_host)
 
         self.web_player = WebPlayerBridge(self._layers_host)
         # Backward compatible alias, some older code might still access _web_player.
         self._web_player = self.web_player
-
         self.web_player.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self._overlay_layer = QWidget(self._layers_host)
@@ -117,17 +139,20 @@ class MainWindow(QMainWindow):
         layers_layout.addWidget(self._overlay_layer, 0, 0)
         layers_layout.addWidget(self.ui.splashFrame, 0, 0)
 
+        # The generated UI includes rootLayout on centralwidget.
         if hasattr(self.ui, "rootLayout") and self.ui.rootLayout is not None:
             self.ui.rootLayout.addWidget(self._layers_host)
 
+        # Idle overlay widgets are parented to splashFrame (idle only).
         self._idle_qr_card: Optional[QFrame] = None
         self._idle_qr_label: Optional[QLabel] = None
         self._idle_url_hint_label: Optional[QLabel] = None
-        self._status_label: Optional[QLabel] = None
+        self._idle_status_label: Optional[QLabel] = None
 
         self._idle_control_url: str = ""
         self._idle_url_hover_active: bool = False
 
+        # Demo controls are hosted in a single fixed card at the bottom.
         self._demo_controls_host = QFrame(self._layers_host)
         self._demo_controls_host.setObjectName("demoControlsHost")
         self._demo_controls_host.setStyleSheet(
@@ -142,54 +167,73 @@ class MainWindow(QMainWindow):
         self._demo_controls_widget: Optional[QWidget] = None
         self._demo_mode_active: bool = False
 
-        self._current_video_id: str = ""
+        self._current_video_id: Optional[str] = None
         self._last_player_state_name: str = "unknown"
 
+        # Optional key press callback (legacy integration hook).
         self._key_press_handler: Optional[Callable[[int], bool]] = None
 
+        # Gameplay overlay widget (Play/Learning overlay from the gameplay chunk).
         self._gameplay_overlay_widget: Optional[QWidget] = None
 
         self._build_idle_overlay_elements()
 
-        self.ui.actionPreferences.triggered.connect(self.on_action_preferences)
-        self.ui.actionFull_Screen.triggered.connect(self.on_action_fullscreen_toggle)
-        self.ui.actionExit.triggered.connect(self.on_action_exit)
+        # Menu wiring uses action names from the .ui.
+        if hasattr(self.ui, "actionPreferences"):
+            self.ui.actionPreferences.triggered.connect(self.on_action_preferences)
+        if hasattr(self.ui, "actionFull_Screen"):
+            self.ui.actionFull_Screen.triggered.connect(self.on_action_fullscreen_toggle)
+        if hasattr(self.ui, "actionExit"):
+            self.ui.actionExit.triggered.connect(self.on_action_exit)
 
-        # If config load fails, let it raise.
+        # Generate QR for the idle card. Uses qr_code module contract from the design plan.
         app_config, _config_path = get_config()
-
-        control_url, control_qimage = qr_code.generate_control_qr_qimage(
-            app_config,
-            target_size_px=IDLE_QR_BOX_SIZE_PX,
-            fill_color=THEME_BACKGROUND,
-            background_color=THEME_OFFWHITE,
-        )
-        self._set_idle_url_hint(control_url)
-        self.set_idle_qr(control_qimage)
+        try:
+            control_url = qr_code.build_control_url(app_config)
+            qimage, qr_result = qr_code.generate_control_qr_qimage(
+                url=control_url,
+                fill_color=THEME_BACKGROUND,
+                background_color=THEME_OFFWHITE,
+            )
+            if qr_result.ok:
+                self._set_idle_url_hint(qr_result.url)
+                self.set_idle_qr(qimage)
+            else:
+                self._set_idle_url_hint(control_url)
+                self._set_idle_status_text("QR unavailable: " + str(qr_result.error or "unknown"))
+        except Exception as exc:
+            self._set_idle_status_text("QR unavailable: " + str(exc))
 
         self.web_player.stateChanged.connect(self._on_player_state_changed)
 
         self.show_idle()
-        self._set_status_text("IDLE  |  F11 fullscreen  |  space demo")
+        self.set_idle_state_text("IDLE  |  F11 fullscreen  |  space demo")
 
     # -----------------
-    # Public API
+    # Public API (design plan)
     # -----------------
 
-    @property
-    def current_video_id(self) -> str:
+    def player_bridge(self) -> WebPlayerBridge:
+        return self.web_player
+
+    def current_video_id(self) -> Optional[str]:
         return self._current_video_id
 
-    def set_current_video_id(self, video_id: str) -> None:
-        self._current_video_id = (video_id or "").strip()
+    def set_current_video_id(self, video_id: Optional[str]) -> None:
+        cleaned = (video_id or "").strip()
+        self._current_video_id = cleaned if cleaned else None
 
     def is_playing_state(self) -> bool:
         return self._last_player_state_name == "playing"
 
+    def set_demo_mode_enabled(self, is_enabled: bool) -> None:
+        # MainWindow does not decide mode transitions. This only controls visibility.
+        self.set_demo_controls_visible(bool(is_enabled))
+
     def set_key_press_handler(self, handler: Optional[Callable[[int], bool]]) -> None:
         self._key_press_handler = handler
 
-    def set_demo_controls_widget(self, demo_controls_widget: QWidget) -> None:
+    def set_demo_controls_widget(self, demo_controls_widget: Optional[QWidget]) -> None:
         if self._demo_controls_widget is demo_controls_widget:
             return
 
@@ -199,6 +243,10 @@ class MainWindow(QMainWindow):
             old_widget.deleteLater()
 
         self._demo_controls_widget = demo_controls_widget
+        if demo_controls_widget is None:
+            self._demo_controls_host.hide()
+            return
+
         demo_controls_widget.setParent(self._demo_controls_host)
 
         host_layout = self._demo_controls_host.layout()
@@ -216,20 +264,20 @@ class MainWindow(QMainWindow):
         host_layout.addWidget(demo_controls_widget)
         self._position_demo_controls()
 
-    def set_demo_controls_visible(self, visible: bool) -> None:
+    def set_demo_controls_visible(self, is_visible: bool) -> None:
         if self._demo_controls_widget is None:
             self._demo_controls_host.hide()
             return
 
-        if bool(visible):
+        if bool(is_visible):
             self._demo_controls_host.show()
             self._demo_controls_host.raise_()
             self._position_demo_controls()
         else:
             self._demo_controls_host.hide()
 
-    def set_gameplay_overlay_widget(self, overlay_widget: QWidget) -> None:
-        if self._gameplay_overlay_widget is overlay_widget:
+    def set_gameplay_overlay_widget(self, widget: Optional[QWidget]) -> None:
+        if self._gameplay_overlay_widget is widget:
             return
 
         if self._gameplay_overlay_widget is not None:
@@ -238,9 +286,12 @@ class MainWindow(QMainWindow):
             old_overlay.setParent(None)
             old_overlay.deleteLater()
 
-        self._gameplay_overlay_widget = overlay_widget
-        overlay_widget.setParent(self._overlay_layer)
-        self._overlay_layout.addWidget(overlay_widget, 0, 0)
+        self._gameplay_overlay_widget = widget
+        if widget is None:
+            return
+
+        widget.setParent(self._overlay_layer)
+        self._overlay_layout.addWidget(widget, 0, 0)
 
     def show_idle(self) -> None:
         self.ui.splashFrame.show()
@@ -259,8 +310,8 @@ class MainWindow(QMainWindow):
             self._idle_qr_label.setText("QR unavailable")
             return
 
-        target_width = max(1, self._idle_qr_label.width())
-        target_height = max(1, self._idle_qr_label.height())
+        target_width = int(self._idle_qr_label.width()) or IDLE_QR_BOX_SIZE_PX
+        target_height = int(self._idle_qr_label.height()) or IDLE_QR_BOX_SIZE_PX
 
         pixmap = QPixmap.fromImage(image)
         scaled = pixmap.scaled(
@@ -272,8 +323,9 @@ class MainWindow(QMainWindow):
         self._idle_qr_label.setPixmap(scaled)
         self._idle_qr_label.setText("")
 
-    def load_video(self, video_id: str, *, autoplay: bool = False) -> None:
-        self.web_player.load_video(video_id, start_seconds=0.0, autoplay=bool(autoplay))
+    def load_video(self, video_id_or_url: str, start_seconds: float = 0.0, autoplay: bool = True) -> None:
+        # WebPlayerBridge.load_video is keyword-only for video_id_or_url.
+        self.web_player.load_video(video_id_or_url=video_id_or_url, start_seconds=float(start_seconds), autoplay=bool(autoplay))
 
     def play(self) -> None:
         self.web_player.play()
@@ -284,21 +336,43 @@ class MainWindow(QMainWindow):
     def seek(self, seconds: float) -> None:
         self.web_player.seek(float(seconds))
 
+    def set_muted(self, is_muted: bool) -> None:
+        self.web_player.set_muted(bool(is_muted))
+
+    def set_volume(self, volume_percent: int) -> None:
+        self.web_player.set_volume(int(volume_percent))
+
+    # Extra convenience hooks used by the Desktop Shell orchestrator.
+    def set_idle_state_text(self, text: str) -> None:
+        self._set_idle_status_text(text)
+
+    def set_gameplay_state_text(self, text: str) -> None:
+        # Keep gameplay debug text out of the idle card; use the status bar.
+        if self.statusBar() is not None:
+            self.statusBar().showMessage(str(text or "").strip())
+        # If idle is visible, also show it in the idle debug label.
+        if self.ui.splashFrame.isVisible():
+            self._set_idle_status_text(text)
+
     # -----------------
     # Menu actions
     # -----------------
 
-    def on_action_fullscreen_toggle(self):
+    def on_action_fullscreen_toggle(self) -> None:
         if self.isFullScreen():
             self.showNormal()
         else:
             self.showFullScreen()
-        return
 
     def on_action_preferences(self) -> None:
-        config_path = get_config()[1]
-        opened_path = open_config_json_in_editor(config_path)
-        self._set_status_text("Opened config: " + str(opened_path))
+        try:
+            opened_path = open_config_json_in_editor()
+        except TypeError:
+            # Backward compatibility if the function still expects a path.
+            config_path = get_config()[1]
+            opened_path = open_config_json_in_editor(config_path)
+
+        self._set_idle_status_text("Opened config: " + str(opened_path))
 
     def on_action_exit(self) -> None:
         self.close()
@@ -309,7 +383,9 @@ class MainWindow(QMainWindow):
 
     def _on_player_state_changed(self, player_state_info: object) -> None:
         try:
-            self._last_player_state_name = str(getattr(player_state_info, "name", "unknown")).strip().lower() or "unknown"
+            # WebPlayerBridge publishes PlayerStateInfo.state_name.
+            state_name = str(getattr(player_state_info, "state_name", "unknown")).strip().lower()
+            self._last_player_state_name = state_name or "unknown"
         except Exception:
             self._last_player_state_name = "unknown"
 
@@ -408,9 +484,10 @@ class MainWindow(QMainWindow):
 
         qr_card.adjustSize()
 
-        debug_label = QLabel("", splash_frame)
-        debug_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        debug_label.setStyleSheet(
+        # Idle debug/state label (top-left).
+        status_label = QLabel("", splash_frame)
+        status_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        status_label.setStyleSheet(
             "background: rgba(5, 3, 19, 160);"
             f"color: {THEME_CYAN};"
             "padding: 6px 10px;"
@@ -418,12 +495,12 @@ class MainWindow(QMainWindow):
             "border-radius: 10px;"
             "font-size: 12px;"
         )
-        debug_label.adjustSize()
+        status_label.adjustSize()
 
         self._idle_qr_card = qr_card
         self._idle_qr_label = qr_label
         self._idle_url_hint_label = url_hint_label
-        self._status_label = debug_label
+        self._idle_status_label = status_label
 
         self._position_idle_overlays()
 
@@ -437,6 +514,13 @@ class MainWindow(QMainWindow):
         self._idle_url_hint_label.adjustSize()
         self._position_idle_overlays()
 
+    def _set_idle_status_text(self, text: str) -> None:
+        if self._idle_status_label is None:
+            return
+        self._idle_status_label.setText(str(text or "").strip())
+        self._idle_status_label.adjustSize()
+        self._position_idle_overlays()
+
     def _open_idle_url_in_browser(self) -> None:
         url_text = (self._idle_control_url or "").strip()
         if not url_text:
@@ -444,7 +528,7 @@ class MainWindow(QMainWindow):
 
         url = QUrl.fromUserInput(url_text)
         if not url.isValid():
-            self._set_status_text("Invalid URL: " + url_text)
+            self._set_idle_status_text("Invalid URL: " + url_text)
             return
 
         QDesktopServices.openUrl(url)
@@ -462,7 +546,7 @@ class MainWindow(QMainWindow):
         top_left_global = self._idle_url_hint_label.mapToGlobal(QPoint(0, 0))
         return QRect(top_left_global, self._idle_url_hint_label.size())
 
-    def eventFilter(self, watched, event) -> bool:
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
         if watched is self.ui.splashImageLabel and self.ui.splashFrame.isVisible():
             url_rect_global = self._idle_url_rect_global()
 
@@ -514,13 +598,13 @@ class MainWindow(QMainWindow):
         qr_card.setGeometry(target_x, target_y, qr_card_width, qr_card_height)
         qr_card.raise_()
 
-        if self._status_label is not None:
-            debug_label = self._status_label
-            debug_size = debug_label.sizeHint()
-            debug_width = max(1, debug_size.width())
-            debug_height = max(1, debug_size.height())
-            debug_label.setGeometry(IDLE_DEBUG_MARGIN_LEFT_PX, IDLE_DEBUG_MARGIN_TOP_PX, debug_width, debug_height)
-            debug_label.raise_()
+        if self._idle_status_label is not None:
+            status_label = self._idle_status_label
+            status_size = status_label.sizeHint()
+            status_width = max(1, status_size.width())
+            status_height = max(1, status_size.height())
+            status_label.setGeometry(IDLE_DEBUG_MARGIN_LEFT_PX, IDLE_DEBUG_MARGIN_TOP_PX, status_width, status_height)
+            status_label.raise_()
 
     def _position_demo_controls(self) -> None:
         if self._demo_controls_widget is None:
@@ -545,13 +629,6 @@ class MainWindow(QMainWindow):
         self._demo_controls_host.setGeometry(target_x, target_y, int(desired_width), int(desired_height))
         self._demo_controls_host.raise_()
 
-    def _set_status_text(self, text: str) -> None:
-        if self._status_label is None:
-            return
-        self._status_label.setText(text)
-        self._status_label.adjustSize()
-        self._position_idle_overlays()
-
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._position_idle_overlays()
@@ -574,7 +651,6 @@ class MainWindow(QMainWindow):
             if self._demo_mode_active:
                 self._demo_mode_active = False
                 self.set_demo_controls_visible(False)
-                # Return to idle. AppController will re-apply control state after demo is disabled.
                 self.pause()
                 self.seek(0.0)
                 self.show_idle()
