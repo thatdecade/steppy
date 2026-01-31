@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import argparse
-from typing import Optional, Tuple, List
+from typing import Optional
 
 
 @dataclass
@@ -55,8 +55,15 @@ def _build_gameplay_chart_from_test_chart(difficulty: str):
     import test_chart
 
     test_payload = test_chart.build_test_chart(difficulty=difficulty)
-    notes = [gameplay_models.NoteEvent(time_seconds=float(n.time_seconds), lane=int(n.lane)) for n in test_payload.notes]
-    chart = gameplay_models.Chart(difficulty=str(test_payload.difficulty), notes=notes, duration_seconds=float(test_payload.duration_seconds))
+    notes = [
+        gameplay_models.NoteEvent(time_seconds=float(n.time_seconds), lane=int(n.lane))
+        for n in test_payload.notes
+    ]
+    chart = gameplay_models.Chart(
+        difficulty=str(test_payload.difficulty),
+        notes=notes,
+        duration_seconds=float(test_payload.duration_seconds),
+    )
     return chart
 
 
@@ -68,11 +75,20 @@ def _run_chunk_tests() -> None:
 
     chart = _build_gameplay_chart_from_test_chart("easy")
     scheduler = note_scheduler.NoteScheduler(chart)
-    windows = judge.JudgementWindows(perfect_seconds=0.03, great_seconds=0.07, good_seconds=0.12, miss_seconds=0.2)
+    windows = judge.JudgementWindows(
+        perfect_seconds=0.03,
+        great_seconds=0.07,
+        good_seconds=0.12,
+        miss_seconds=0.2,
+    )
     engine = judge.JudgeEngine(scheduler, windows)
 
     # Determinism: scheduler ordering by (time, lane)
-    all_notes = scheduler.visible_notes(song_time_seconds=5.0, lookback_seconds=999.0, lookahead_seconds=999.0)
+    all_notes = scheduler.visible_notes(
+        song_time_seconds=5.0,
+        lookback_seconds=999.0,
+        lookahead_seconds=999.0,
+    )
     ordered = [(n.note_event.time_seconds, n.note_event.lane) for n in all_notes]
     assert ordered == sorted(ordered)
 
@@ -89,16 +105,21 @@ def _run_chunk_tests() -> None:
     first_note = ordered[0]
     first_note_time = float(first_note[0])
     first_note_lane = int(first_note[1])
-    hit = engine.on_input_event(gameplay_models.InputEvent(time_seconds=first_note_time, lane=first_note_lane))
+    hit = engine.on_input_event(
+        gameplay_models.InputEvent(time_seconds=first_note_time, lane=first_note_lane)
+    )
     assert hit is not None
     assert hit.judgement == "perfect"
     assert engine.score_state().score == 2
 
     # Stray press is ignored (returns None)
-    stray = engine.on_input_event(gameplay_models.InputEvent(time_seconds=first_note_time, lane=(first_note_lane + 1) % 4))
+    stray = engine.on_input_event(
+        gameplay_models.InputEvent(
+            time_seconds=first_note_time,
+            lane=(first_note_lane + 1) % 4,
+        )
+    )
     assert stray is None
-
-
 
     # Misses do not re-emit for the same note.
     minimal_chart = gameplay_models.Chart(
@@ -109,11 +130,12 @@ def _run_chunk_tests() -> None:
     minimal_scheduler = note_scheduler.NoteScheduler(minimal_chart)
     minimal_engine = judge.JudgeEngine(minimal_scheduler, windows)
 
-    misses_first = minimal_engine.update_for_time(song_time_seconds=1.0 + windows.miss_seconds + 0.01)
+    misses_first = minimal_engine.update_for_time(
+        song_time_seconds=1.0 + windows.miss_seconds + 0.01
+    )
     assert len(misses_first) == 1
     misses_second = minimal_engine.update_for_time(song_time_seconds=10.0)
     assert len(misses_second) == 0
-
 
 
 def _run_gui() -> int:
@@ -159,7 +181,14 @@ def _run_gui() -> int:
             self._bridge.stateChanged.connect(self._on_player_state_changed)
             self._bridge.errorOccurred.connect(self._on_player_error)
 
-            self._overlay = overlay_renderer.GameplayOverlayWidget(self._timing.song_time_seconds, parent=self)
+            # Track last known player state so we can treat ended differently.
+            self._last_player_state_code: Optional[int] = None
+            self._last_player_state_name: str = "unknown"
+
+            self._overlay = overlay_renderer.GameplayOverlayWidget(
+                self._timing.song_time_seconds,
+                parent=self,
+            )
             self._overlay.set_overlay_mode(overlay_renderer.OverlayMode.PLAY)
 
             self._router = input_router.InputRouter(self._timing.song_time_seconds, parent=self)
@@ -197,6 +226,10 @@ def _run_gui() -> int:
 
             self._status_label = QLabel("", controls)
 
+            # Dedicated time label that shows player and song time continuously.
+            self._time_label = QLabel("", controls)
+            self._time_label.setText("time: player=0.000  song=0.000")
+
             controls_layout.addWidget(QLabel("Video:", controls))
             controls_layout.addWidget(self._video_edit)
             controls_layout.addWidget(QLabel("Difficulty:", controls))
@@ -211,6 +244,7 @@ def _run_gui() -> int:
             layout.addWidget(self._bridge, stretch=3)
             layout.addWidget(self._overlay, stretch=4)
             layout.addWidget(self._status_label)
+            layout.addWidget(self._time_label)
 
             self.setCentralWidget(root)
 
@@ -239,36 +273,62 @@ def _run_gui() -> int:
             self._status_label.setText(str(text))
             self._overlay.set_state_text(str(text))
 
+        def _update_time_label(self) -> None:
+            player_time = float(self._timing.player_time_seconds())
+            song_time = float(self._timing.song_time_seconds())
+            self._time_label.setText(
+                f"time: player={player_time:.3f}  song={song_time:.3f}"
+            )
+
         def _on_load_clicked(self) -> None:
             video_id_or_url = str(self._video_edit.text()).strip()
             difficulty = str(self._difficulty_combo.currentText()).strip().lower()
             self._state.video_id = video_id_or_url or "test"
 
             # Always load the player, even when chart data is missing (Learning mode).
-            self._bridge.load_video(video_id_or_url=self._state.video_id, start_seconds=0.0, autoplay=False)
-
-
+            self._bridge.load_video(
+                video_id_or_url=self._state.video_id,
+                start_seconds=0.0,
+                autoplay=False,
+            )
 
             self._state.difficulty = difficulty or "easy"
             self._state.last_error = ""
-
             self._state.is_paused = False
+
+            # Reset timing and labels.
             self._timing.update_player_time_seconds(0.0)
+            self._update_time_label()
+
+            # Reset state tracking.
+            self._last_player_state_code = None
+            self._last_player_state_name = "unknown"
 
             if self._state.video_id.strip().lower() == "test":
                 chart = _build_gameplay_chart_from_test_chart(self._state.difficulty)
                 self._scheduler = note_scheduler.NoteScheduler(chart)
-                windows = judge.JudgementWindows(perfect_seconds=0.03, great_seconds=0.07, good_seconds=0.12, miss_seconds=0.2)
+                windows = judge.JudgementWindows(
+                    perfect_seconds=0.03,
+                    great_seconds=0.07,
+                    good_seconds=0.12,
+                    miss_seconds=0.2,
+                )
                 self._judge = judge.JudgeEngine(self._scheduler, windows)
                 self._overlay.set_overlay_mode(overlay_renderer.OverlayMode.PLAY)
-                self._overlay.set_play_mode_objects(note_scheduler_obj=self._scheduler, judge_engine_obj=self._judge)
+                self._overlay.set_play_mode_objects(
+                    note_scheduler_obj=self._scheduler,
+                    judge_engine_obj=self._judge,
+                )
                 self._state.chart_source_kind = "test"
                 self._set_status("Play mode (test chart)")
             else:
                 self._scheduler = None
                 self._judge = None
                 self._overlay.set_overlay_mode(overlay_renderer.OverlayMode.LEARNING)
-                self._overlay.set_play_mode_objects(note_scheduler_obj=None, judge_engine_obj=None)
+                self._overlay.set_play_mode_objects(
+                    note_scheduler_obj=None,
+                    judge_engine_obj=None,
+                )
                 self._state.chart_source_kind = "learning"
                 self._set_status("Learning overlay (no chart in this chunk)")
 
@@ -288,9 +348,10 @@ def _run_gui() -> int:
             self._set_status("Paused (inputs flash only)")
 
         def _on_restart_clicked(self) -> None:
-            # Restart-only backward time contract: we restart and reset pipeline.
+            # Restart-only backward time contract: restart pipeline.
             self._bridge.seek(0.0)
             self._timing.update_player_time_seconds(0.0)
+            self._update_time_label()
             if self._scheduler is not None:
                 self._scheduler.reset()
             if self._judge is not None:
@@ -308,11 +369,23 @@ def _run_gui() -> int:
             self._timing.update_player_time_seconds(float(player_time_seconds))
             current = self._timing.player_time_seconds()
 
+            self._update_time_label()
+
+            # Do not auto restart when we know the player has ended.
+            if self._last_player_state_name == "ended":
+                return
+
+            # Backward jump detection is kept for test seeking, but skipped after end.
             if current + 0.0001 < previous:
-                # Recommended default: treat any backward jump as restart.
                 self._on_restart_clicked()
 
         def _on_player_state_changed(self, info) -> None:
+            # Cache last state for coordination with timeUpdated.
+            state_code = getattr(info, "state_code", None)
+            state_name = getattr(info, "state_name", "unknown")
+            self._last_player_state_code = state_code
+            self._last_player_state_name = state_name
+
             if getattr(info, "is_ended", False):
                 self._set_status("Ended")
                 self._state.is_paused = True
@@ -333,8 +406,8 @@ def _run_gui() -> int:
                     self._signals.strayPress.emit(input_event)
 
     import sys
-
     from PyQt6.QtCore import QCoreApplication
+
     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
 
     app = QApplication(sys.argv)
@@ -346,7 +419,11 @@ def _run_gui() -> int:
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run-tests", action="store_true", help="Run pure logic tests (no Qt).")
+    parser.add_argument(
+        "--run-tests",
+        action="store_true",
+        help="Run pure logic tests (no Qt).",
+    )
     return parser
 
 

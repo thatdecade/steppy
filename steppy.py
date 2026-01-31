@@ -1,83 +1,122 @@
+# -*- coding: utf-8 -*-
+########################
+# steppy.py
+########################
+# Purpose:
+# - Desktop application entrypoint.
+# - Loads config, builds MainWindow, starts ControlApiBridge, and starts AppController.
+#
+# Design notes:
+# - Keep CLI arguments limited to operational toggles (kiosk, fullscreen, debug, poll interval).
+# - Treat web_server.py as stable. Use ControlApiBridge as the adapter.
+#
+########################
+# Interfaces:
+# Public functions:
+# - build_argument_parser() -> argparse.ArgumentParser
+# - main() -> int
+#
+# Inputs:
+# - CLI args:
+#   - --kiosk
+#   - --fullscreen
+#   - --web-debug
+#   - --poll-interval-ms <int>
+#
+# Outputs:
+# - Runs the Qt application event loop.
+#
+########################
+# Main Entry:
+# python steppy.py
+########################
+
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
 
+from PyQt6.QtCore import Qt, QCoreApplication
 from PyQt6.QtWidgets import QApplication
 
-from app_controller import AppController
-from config import get_config
-from control_api import ControlApiBridge
-from main_window import MainWindow
+import config as config_module
+import control_api
+import main_window
+import app_controller
 
 
-def _resolve_web_root_dir() -> Path:
-    candidates: list[Path] = []
-
-    try:
-        candidates.append(Path(__file__).resolve().parent / "assets")
-    except Exception:
-        pass
-
-    try:
-        import web_server
-
-        candidates.append(Path(web_server.__file__).resolve().parent / "assets")
-    except Exception:
-        pass
-
-    candidates.append(Path.cwd() / "assets")
-
-    for candidate in candidates:
-        if candidate.exists() and candidate.is_dir():
-            return candidate
-
-    if candidates:
-        return candidates[0]
-
-    return Path.cwd()
-
-
-def main() -> int:
-    argument_parser = argparse.ArgumentParser(description="Steppy application")
-    argument_parser.add_argument("--kiosk", action="store_true", help="Enable kiosk window flags and hide cursor.")
-    argument_parser.add_argument("--fullscreen", action="store_true", help="Start in fullscreen.")
-    argument_parser.add_argument("--web-debug", action="store_true", help="Enable Flask debug mode.")
-    argument_parser.add_argument(
+def build_argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Steppy desktop application")
+    parser.add_argument("--kiosk", action="store_true", help="Hide window chrome and reduce distractions.")
+    parser.add_argument("--fullscreen", action="store_true", help="Start in fullscreen mode.")
+    parser.add_argument("--web-debug", action="store_true", help="Run the embedded web server in debug mode.")
+    parser.add_argument(
         "--poll-interval-ms",
         type=int,
         default=200,
-        help="In-process control status polling interval (Qt timer).",
+        help="Polling interval for ControlApiBridge (milliseconds).",
     )
-    parsed_args = argument_parser.parse_args()
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Show the on-screen demo controls widget.",
+    )
+    return parser
 
-    app_config, _config_path = get_config()
 
-    qt_application = QApplication(sys.argv)
+def _resolve_web_root_dir() -> Path:
+    """
+    Resolve the directory that contains web assets served by the embedded Flask server.
 
-    main_window = MainWindow(kiosk_mode=bool(parsed_args.kiosk))
-    main_window.resize(1536, 1024)
-    main_window.show()
+    This is intentionally conservative:
+    - If a 'web' directory exists next to this file, use it.
+    - Otherwise, fall back to the project root.
+    """
+    entry_file_dir = Path(__file__).resolve().parent
+    candidate_dir = entry_file_dir / "web"
+    if candidate_dir.exists() and candidate_dir.is_dir():
+        return candidate_dir
+    return entry_file_dir
 
-    if parsed_args.fullscreen:
-        main_window.showFullScreen()
 
-    web_root_dir = _resolve_web_root_dir()
+def main() -> int:
+    args = build_argument_parser().parse_args()
 
-    control_bridge = ControlApiBridge(
+    # This attribute reduces OpenGL related issues in some WebEngine environments.
+    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
+
+    app_config, _config_path = config_module.get_config()
+
+    application = QApplication(sys.argv)
+
+    window = main_window.MainWindow()
+    window.set_demo_mode_enabled(bool(args.demo))
+
+    if args.kiosk:
+        window.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+
+    if args.fullscreen:
+        window.showFullScreen()
+    else:
+        window.resize(1180, 900)
+        window.show()
+
+    control_bridge = control_api.ControlApiBridge(
         bind_host=str(app_config.web_server.host),
         bind_port=int(app_config.web_server.port),
-        web_root_dir=web_root_dir,
-        debug=bool(parsed_args.web_debug),
-        poll_interval_ms=int(parsed_args.poll_interval_ms),
-        parent=main_window,
+        web_root_dir=_resolve_web_root_dir(),
+        debug=bool(args.web_debug),
+        poll_interval_ms=int(args.poll_interval_ms),
+        parent=window,
     )
+    control_bridge.start()
 
-    controller = AppController(main_window=main_window, control_bridge=control_bridge)
+    controller = app_controller.AppController(main_window=window, control_bridge=control_bridge)
     controller.start()
+    controller.set_demo_mode_enabled(bool(args.demo))
 
-    return int(qt_application.exec())
+    return int(application.exec())
 
 
 if __name__ == "__main__":

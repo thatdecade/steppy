@@ -25,6 +25,7 @@
 #     - stateChanged(PlayerStateInfo)
 #     - playerReadyChanged(bool)
 #     - errorOccurred(str)
+#     - playbackEnded(PlayerStateInfo)
 #   - Methods:
 #     - load_video(*, video_id_or_url: str, start_seconds: float = 0.0, autoplay: bool = True) -> None
 #     - play() -> None
@@ -127,6 +128,7 @@ class _WebEngineBackend(QObject):
     stateChanged = pyqtSignal(object)
     playerReadyChanged = pyqtSignal(bool)
     errorOccurred = pyqtSignal(str)
+    playbackEnded = pyqtSignal(object)
 
     def __init__(self, view: QWebEngineView) -> None:
         super().__init__()
@@ -210,7 +212,7 @@ class _WebEngineBackend(QObject):
     def _configure_view_settings(self) -> None:
         settings = self._view.settings()
 
-        # Match the old stable harness behavior:
+        # Match the old stable harness behavior.
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
@@ -474,12 +476,16 @@ window.steppyGetSnapshot = function() {
             )
             self.stateChanged.emit(state_info)
 
+            if is_ended:
+                self.playbackEnded.emit(state_info)
+
 
 class WebPlayerBridge(QFrame):
     timeUpdated = pyqtSignal(float)
     stateChanged = pyqtSignal(object)
     playerReadyChanged = pyqtSignal(bool)
     errorOccurred = pyqtSignal(str)
+    playbackEnded = pyqtSignal(object)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent=parent)
@@ -510,6 +516,9 @@ class WebPlayerBridge(QFrame):
             self._web_backend.playerReadyChanged.connect(self.playerReadyChanged)
             self._web_backend.errorOccurred.connect(self.errorOccurred)
             self._web_backend.errorOccurred.connect(self._on_backend_error)
+
+            # New: forward playbackEnded from backend to public signal.
+            self._web_backend.playbackEnded.connect(self.playbackEnded)
 
             self._stack_layout.setCurrentIndex(1)
             self._status_label.setText("WebPlayerBridge backend: webengine")
