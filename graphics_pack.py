@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 graphics_pack.py
 
@@ -10,6 +11,14 @@ Temp cache behavior:
 
 Map file paths can be flat ("receptor/down/frame_0.png") or prefixed ("images/receptor/...").
 If prefixed, the "images/" segment is stripped at runtime.
+
+Design plan public API contract:
+
+- map_file_path() -> pathlib.Path
+- cache_root_dir() -> pathlib.Path
+- draw_receptor(..., judgement: Optional[str]) -> None
+- draw_tap_note(...) -> None
+- draw_tap_explosion(..., judgement: Optional[str], song_time_seconds: float, bpm_guess: float) -> None
 """
 
 from __future__ import annotations
@@ -58,11 +67,9 @@ class GraphicsPack:
 
         self._parse_map()
 
-    @property
     def map_file_path(self) -> Path:
         return self._map_file_path
 
-    @property
     def cache_root_dir(self) -> Path:
         return self._cache_root_dir
 
@@ -94,7 +101,7 @@ class GraphicsPack:
     def _ensure_temp_image_cache_ready(self) -> Path:
         """
         Cache layout:
-        <temp>/steppy/image_cache/
+        <temp>/steppy/image_cache_v1/
           READY.txt
           receptor/
           tap_note/
@@ -134,9 +141,6 @@ class GraphicsPack:
         with zipfile.ZipFile(str(zip_path), "r") as zip_file:
             zip_file.extractall(str(staging_dir))
 
-        # Zip may contain either:
-        # - receptor/, tap_note/, ...
-        # - images/receptor/, images/tap_note/, ...
         source_root_dir = staging_dir
         images_prefix_dir = staging_dir / "images"
         if images_prefix_dir.exists() and (images_prefix_dir / "receptor").exists():
@@ -286,52 +290,48 @@ class GraphicsPack:
             return frames[0].file_path
 
         phase_beats = (float(song_time_seconds) / seconds_per_beat) % total_beats
-        accumulated = 0.0
+        accumulated_beats = 0.0
         for frame_spec in frames:
-            accumulated += float(frame_spec.duration_beats)
-            if phase_beats <= accumulated:
+            accumulated_beats += float(frame_spec.duration_beats)
+            if phase_beats <= accumulated_beats:
                 return frame_spec.file_path
         return frames[-1].file_path
 
-    def _pick_color_key_for_note_time(self, note_time_seconds: float, bpm_guess: float) -> str:
-        safe_bpm = float(bpm_guess) if float(bpm_guess) > 0.0 else 120.0
-        seconds_per_beat = 60.0 / safe_bpm
+    def _pick_tap_note_path(self, lane_index: int) -> Optional[Path]:
+        """
+        Plan-aligned draw_tap_note does not receive note timing.
+        We choose a deterministic color variant based on lane_index so callers can remain simple.
+        """
+        direction = self._direction_for_lane(lane_index)
 
-        beat_position = float(note_time_seconds) / seconds_per_beat
-        fractional = beat_position - float(int(beat_position))
+        all_color_keys = sorted(self._tap_note_paths_by_color_and_direction.keys())
+        if not all_color_keys:
+            return None
 
-        candidate_denominators = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192]
-        best_denominator = 4
-        best_error = 999.0
+        preferred_index = int(lane_index) % len(all_color_keys)
+        preferred_color_key = all_color_keys[preferred_index]
+        direction_paths = self._tap_note_paths_by_color_and_direction.get(preferred_color_key)
 
-        for denominator in candidate_denominators:
-            nearest_numerator = int(round(fractional * float(denominator)))
-            snapped = float(nearest_numerator) / float(denominator)
-            error = abs(fractional - snapped)
-            if error < best_error:
-                best_error = error
-                best_denominator = int(denominator)
+        if not direction_paths:
+            direction_paths = self._tap_note_paths_by_color_and_direction.get("03")
 
-        denominator_to_index = {
-            1: 0,
-            2: 1,
-            3: 2,
-            4: 3,
-            6: 4,
-            8: 5,
-            12: 6,
-            16: 7,
-            24: 8,
-            32: 9,
-            48: 10,
-            64: 11,
-            96: 12,
-            128: 13,
-            192: 14,
-        }
-        color_index = int(denominator_to_index.get(best_denominator, 15))
-        color_index = max(0, min(15, color_index))
-        return f"{color_index:02d}"
+        if not direction_paths:
+            direction_paths = self._tap_note_paths_by_color_and_direction.get(all_color_keys[0])
+
+        if not direction_paths:
+            return None
+
+        return direction_paths.get(direction) or direction_paths.get("Down")
+
+    def _pick_tap_explosion_path(self, lane_index: int, judgement: Optional[str]) -> Optional[Path]:
+        direction = self._direction_for_lane(lane_index)
+        judgement_text = str(judgement or "").strip().lower()
+        use_bright = judgement_text in {"perfect", "great"}
+
+        if use_bright and self._tap_explosion_bright_path is not None:
+            return self._tap_explosion_bright_path
+
+        return self._tap_explosion_dim_paths_by_direction.get(direction) or self._tap_explosion_bright_path
 
     def draw_receptor(
         self,
@@ -343,14 +343,23 @@ class GraphicsPack:
         flash_active: bool,
         song_time_seconds: float,
         bpm_guess: float,
+        judgement: Optional[str],
     ) -> None:
         direction = self._direction_for_lane(lane_index)
         frame_path = self._pick_receptor_frame_path(direction, song_time_seconds, bpm_guess)
         if frame_path is None:
             return
 
+        judgement_text = str(judgement or "").strip().lower()
+        judgement_multiplier = 1.0
+        if judgement_text == "good":
+            judgement_multiplier = 0.92
+        elif judgement_text == "miss":
+            judgement_multiplier = 0.84
+
         painter.save()
-        painter.setOpacity(painter.opacity() * (1.0 if flash_active else 0.78))
+        base_opacity = 1.0 if flash_active else 0.78
+        painter.setOpacity(painter.opacity() * base_opacity * judgement_multiplier)
         pixmap = self._scaled_pixmap(frame_path, size_pixels)
         self._draw_centered_pixmap(painter, pixmap, center)
         painter.restore()
@@ -362,18 +371,8 @@ class GraphicsPack:
         lane_index: int,
         center: QPointF,
         size_pixels: float,
-        note_time_seconds: float,
-        bpm_guess: float,
     ) -> None:
-        direction = self._direction_for_lane(lane_index)
-        color_key = self._pick_color_key_for_note_time(note_time_seconds, bpm_guess)
-        direction_paths = self._tap_note_paths_by_color_and_direction.get(color_key)
-        if not direction_paths:
-            direction_paths = self._tap_note_paths_by_color_and_direction.get("03")
-        if not direction_paths:
-            return
-
-        file_path = direction_paths.get(direction) or direction_paths.get("Down")
+        file_path = self._pick_tap_note_path(lane_index)
         if file_path is None:
             return
 
@@ -387,29 +386,26 @@ class GraphicsPack:
         lane_index: int,
         center: QPointF,
         size_pixels: float,
-        judgement: str,
-        age_seconds: float,
+        judgement: Optional[str],
+        song_time_seconds: float,
+        bpm_guess: float,
     ) -> None:
-        judgement_text = str(judgement or "").strip().lower()
-        direction = self._direction_for_lane(lane_index)
-
-        use_bright = judgement_text in {"perfect", "great"}
-        file_path: Optional[Path] = None
-
-        if use_bright and self._tap_explosion_bright_path is not None:
-            file_path = self._tap_explosion_bright_path
-        else:
-            file_path = self._tap_explosion_dim_paths_by_direction.get(direction)
-
+        file_path = self._pick_tap_explosion_path(lane_index, judgement)
         if file_path is None:
             return
 
-        fade_seconds = 0.25
-        age_value = float(max(0.0, age_seconds))
-        fade_factor = 1.0 - min(1.0, age_value / fade_seconds)
+        safe_bpm = float(bpm_guess) if float(bpm_guess) > 0.0 else 120.0
+        seconds_per_beat = 60.0 / safe_bpm
+
+        beat_phase = (float(song_time_seconds) / seconds_per_beat) % 1.0
+        decay_beats = 0.35
+        opacity_multiplier = 1.0 - min(1.0, beat_phase / decay_beats)
+
+        if opacity_multiplier <= 0.0:
+            return
 
         painter.save()
-        painter.setOpacity(painter.opacity() * fade_factor)
+        painter.setOpacity(painter.opacity() * opacity_multiplier)
         pixmap = self._scaled_pixmap(file_path, size_pixels)
         self._draw_centered_pixmap(painter, pixmap, center)
         painter.restore()
