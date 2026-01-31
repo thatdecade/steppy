@@ -17,11 +17,11 @@
 # Design notes:
 # - Desired vs actual:
 #   - Desired state is owned by AppController and updated from ControlApiBridge signals (and demo controls).
-#   - Actual state is observed from WebPlayerBridge and TimingModel.
+#   - Actual state is observed from WebPlayerBridge and GameplayHarnessController (TimingModel + overlay path).
 #   - Reconciliation runs synchronously on intent arrival and on player callbacks.
 # - Timing:
 #   - WebPlayerBridge player time is the source of truth for time synchronization.
-#   - TimingModel is the authoritative gameplay timing object.
+#   - TimingModel is the authoritative gameplay timing object, owned by GameplayHarnessController.
 # - Learning:
 #   - Desktop Shell drives learning entry and exit, but chart learning algorithms live in other chunks.
 #
@@ -39,7 +39,7 @@
 # - ControlApiBridge signals (state_changed, video_changed, difficulty_changed, error_changed)
 # - WebPlayerBridge signals (timeUpdated, stateChanged, playerReadyChanged, errorOccurred)
 # - DemoControlsWidget signals (optional)
-# - QKeyEvent stream via eventFilter
+# - QKeyEvent stream via eventFilter (delegated to GameplayHarnessController)
 #
 # Outputs:
 # - Commands to WebPlayerBridge (load, play, pause, seek, mute)
@@ -55,28 +55,17 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
-from PyQt6.QtCore import QObject, QEvent, QTimer
+from PyQt6.QtCore import QObject, QEvent
 
 import chart_engine
 import config as config_module
 import control_api
 import demo_controls
-import game_clock
 import main_window
 import qr_code
 
-# Core bridge
-import web_player_bridge
-
-# Gameplay loop chunk modules
+import gameplay_harness
 import gameplay_models
-import input_router
-import judge
-import note_scheduler
-import overlay_renderer
-import timing_model
-
-# Supporting modules for learning chart persistence
 import library_index
 import sm_store
 
@@ -103,8 +92,7 @@ class RuntimeContext:
 
 
 class BasicLearningSession:
-    """
-    Minimal learning session fallback.
+    """Minimal learning session fallback.
 
     This exists so the Desktop Shell chunk can run end-to-end even if the dedicated
     learning chunk is not present yet. When a real learning module is available,
@@ -149,43 +137,72 @@ class AppController(QObject):
         self._mode: AppMode = AppMode.IDLE
         self._context = RuntimeContext()
 
-        # Time and state observation
-        self._timing_model = timing_model.TimingModel()
-        self._game_clock = game_clock.GameClock(self)
-
-        self._last_player_time_seconds: float = 0.0
-        self._last_duration_seconds: float = 0.0
-        self._is_player_ready: bool = False
-        self._last_player_state_name: str = "UNKNOWN"
-
-        # Input routing
-        self._input_router: Optional[input_router.InputRouter] = None
-
-        # Gameplay objects (present only in Play mode)
         self._chart_engine = chart_engine.ChartEngine()
-        self._note_scheduler: Optional[note_scheduler.NoteScheduler] = None
-        self._judge_engine: Optional[judge.JudgeEngine] = None
-        self._score_state = judge.ScoreState()
-
-        # Learning objects (present only in Learning mode)
-        self._learning_session: Optional[Any] = None
 
         # UI widgets owned and attached to MainWindow
-        self._overlay_widget = overlay_renderer.GameplayOverlayWidget(song_time_provider=self._timing_model.song_time_seconds)
         self._demo_controls_widget = demo_controls.DemoControlsWidget()
 
-        self._tick_timer = QTimer(self)
-        self._tick_timer.setInterval(16)
-        self._tick_timer.timeout.connect(self._on_tick)
+        # Gameplay pipeline is owned by GameplayHarnessController.
+        self._overlay_widget = None
+        self._harness_ui_proxy = None
+        self._harness_controller: Optional[gameplay_harness.GameplayHarnessController] = None
 
         # Optional SessionState bindings from web_server.py
         self._session_state: Optional[Any] = None
 
+        # Tracking for end-of-playback and learning duration.
+        self._last_duration_seconds: float = 0.0
+
+        # Learning objects (present only in Learning mode)
+        self._learning_session: Optional[Any] = None
+
+    # -----------------
+    # Public API
+    # -----------------
+
     def start(self) -> None:
-        # Attach widgets
-        self._main_window.set_gameplay_overlay_widget(self._overlay_widget)
+        # Attach demo controls to main window.
         self._main_window.set_demo_controls_widget(self._demo_controls_widget)
         self._main_window.set_demo_controls_visible(False)
+
+        # Ensure an overlay widget exists and is attached.
+        # AppController does not render directly. It delegates drawing to GameplayHarnessController.
+        from overlay_renderer import GameplayOverlayWidget
+        import overlay_renderer
+
+        overlay_widget = GameplayOverlayWidget(
+            lambda: 0.0,  # patched after controller is created
+            parent=self._main_window,
+        )
+        overlay_widget.set_overlay_mode(overlay_renderer.OverlayMode.PLAY)
+        self._overlay_widget = overlay_widget
+        self._main_window.set_gameplay_overlay_widget(overlay_widget)
+
+        # Build a UI proxy that makes demo controls look like the harness UI contract.
+        self._harness_ui_proxy = _build_harness_ui_proxy(
+            demo_widget=self._demo_controls_widget,
+        )
+
+        # Create the harness controller using the existing WebPlayerBridge owned by MainWindow.
+        player = _get_player_bridge(self._main_window)
+        if player is None:
+            raise RuntimeError("MainWindow did not expose a WebPlayerBridge instance.")
+
+        self._harness_controller = gameplay_harness.GameplayHarnessController(
+            web_player=player,
+            overlay_widget=overlay_widget,
+            ui=self._harness_ui_proxy,
+            parent=self,
+        )
+
+        # Patch overlay provider to the harness timing model.
+        overlay_widget._song_time_provider = self._harness_controller.timing_model.song_time_seconds  # type: ignore[attr-defined]
+
+        # Install the shared keyboard event filter.
+        self._main_window.installEventFilter(self._harness_controller)
+
+        # Harness end-of-playback signal.
+        self._harness_controller.signals.playbackEnded.connect(self._on_end_of_playback)
 
         # Generate and show QR on idle screen
         control_url = qr_code.build_control_url(self._app_config)
@@ -196,15 +213,9 @@ class AppController(QObject):
         else:
             self._main_window.set_idle_state_text(f"QR unavailable: {qr_result.error}")
 
-        # Wire player signals
-        player_bridge = self._main_window.player_bridge()
-        player_bridge.timeUpdated.connect(self._on_player_time_updated)
-        player_bridge.stateChanged.connect(self._on_player_state_changed)
-        player_bridge.playerReadyChanged.connect(self._on_player_ready_changed)
-        player_bridge.errorOccurred.connect(self._on_player_error)
-
-        # Wire clock signals for debugging UI (optional)
-        self._game_clock.snapshotUpdated.connect(self._on_clock_snapshot_updated)
+        # Wire player signals we still need for metadata.
+        player.errorOccurred.connect(self._on_player_error)
+        player.stateChanged.connect(self._on_player_state_changed)
 
         # Wire control plane intents
         self._control_bridge.state_changed.connect(self._on_control_state_changed)
@@ -223,29 +234,20 @@ class AppController(QObject):
         self._demo_controls_widget.requestAvOffsetChanged.connect(self._on_av_offset_changed)
         self._demo_controls_widget.requestDifficultyChanged.connect(self._on_demo_difficulty_changed)
 
-        # Install the only keyboard listener (InputRouter) via event filter
-        self._input_router = input_router.InputRouter(song_time_provider=self._timing_model.song_time_seconds)
-        self._input_router.inputEvent.connect(self._on_input_event)
-        self._main_window.installEventFilter(self)
-
         # Attempt to bind runtime providers to the web control plane session state.
         self._try_bind_session_state()
 
-        # Start timer for gameplay logic ticks
-        self._tick_timer.start()
-
         self._set_mode(AppMode.IDLE)
+        self._main_window.show_idle()
         self._refresh_ui_text()
 
     def set_demo_mode_enabled(self, is_enabled: bool) -> None:
+        # MainWindow owns demo mode visuals; AppController only forwards.
         self._main_window.set_demo_mode_enabled(bool(is_enabled))
 
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
-        if watched is self._main_window and self._input_router is not None:
-            self._input_router.eventFilter(watched, event)
-        return super().eventFilter(watched, event)
-
+    # -----------------
     # SessionState wiring (web_server.py)
+    # -----------------
 
     def _try_bind_session_state(self) -> None:
         flask_application = self._control_bridge.flask_application()
@@ -256,7 +258,9 @@ class AppController(QObject):
         self._session_state = session_state
 
         def elapsed_seconds_provider() -> float:
-            return float(self._timing_model.player_time_seconds())
+            if self._harness_controller is None:
+                return 0.0
+            return float(self._harness_controller.timing_model.player_time_seconds())
 
         def get_difficulty() -> str:
             return str(self._context.difficulty)
@@ -270,7 +274,9 @@ class AppController(QObject):
         session_state.bind_difficulty_accessors(getter=get_difficulty, setter=set_difficulty)
         session_state.set_runtime_state_override(self._mode.value)
 
+    # -----------------
     # Control plane intent handlers
+    # -----------------
 
     def _on_control_video_changed(self, new_video_id: str) -> None:
         cleaned = str(new_video_id or "").strip() or None
@@ -307,10 +313,11 @@ class AppController(QObject):
             self._stop_playback()
             return
 
-        # Unknown state: ignore, but keep UI informative.
         self._refresh_ui_text()
 
+    # -----------------
     # Demo control intent handlers
+    # -----------------
 
     def _on_demo_load_request(self, request: object) -> None:
         if not isinstance(request, demo_controls.DemoRequest):
@@ -341,7 +348,6 @@ class AppController(QObject):
         self._resume_playback()
 
     def _on_demo_restart_request(self) -> None:
-        # This is a local intent, so we can act immediately.
         self._restart_playback()
 
     def _on_demo_stop_request(self) -> None:
@@ -354,11 +360,13 @@ class AppController(QObject):
         self._refresh_ui_text()
 
     def _on_av_offset_changed(self, av_offset_seconds: float) -> None:
-        self._timing_model.set_av_offset_seconds(float(av_offset_seconds))
-        self._game_clock.set_av_offset_seconds(float(av_offset_seconds))
+        if self._harness_controller is not None:
+            self._harness_controller.timing_model.set_av_offset_seconds(float(av_offset_seconds))
         self._refresh_ui_text()
 
+    # -----------------
     # Reconciliation and playback control
+    # -----------------
 
     def _reconcile_play_intent(self) -> None:
         if self._context.video_id is None:
@@ -367,26 +375,27 @@ class AppController(QObject):
             return
 
         # If already in a session for this video, resume.
-        if self._mode in {AppMode.PLAY, AppMode.LEARNING} and self._main_window.current_video_id() == self._context.video_id:
+        if self._mode in {AppMode.PLAY, AppMode.LEARNING} and _get_main_window_video_id(self._main_window) == self._context.video_id:
             self._resume_playback()
             return
 
-        # Otherwise start a new session.
         self._start_or_replace_session(autoplay=True)
 
     def _start_or_replace_session(self, *, autoplay: bool) -> None:
         video_id = self._context.video_id
         if video_id is None:
             return
+        if self._harness_controller is None:
+            return
 
         self._stop_active_session(keep_player_loaded=False)
 
         self._set_mode(AppMode.RESOLVE_CHART)
         self._main_window.hide_idle()
-        self._main_window.set_current_video_id(video_id)
+        _set_main_window_video_id(self._main_window, video_id)
 
         # Load video first, but keep autoplay off until we finish mode wiring.
-        self._main_window.load_video(video_id_or_url=video_id, start_seconds=0.0, autoplay=False)
+        self._harness_controller.load_and_configure(video_id_or_url=video_id, difficulty=self._context.difficulty)
 
         resolved = self._try_resolve_cached_chart(video_id=video_id, difficulty=self._context.difficulty)
         if resolved is None:
@@ -403,9 +412,9 @@ class AppController(QObject):
             )
 
         if autoplay and self._context.desired_playback_state == DesiredPlaybackState.PLAYING:
-            self._main_window.play()
+            self._harness_controller.play()
         else:
-            self._main_window.pause()
+            self._harness_controller.pause()
 
         self._refresh_ui_text()
 
@@ -432,16 +441,13 @@ class AppController(QObject):
         source_kind: str,
         simfile_path: Optional[Path],
     ) -> None:
-        self._score_state = judge.ScoreState()
-        self._note_scheduler = note_scheduler.NoteScheduler(chart=chart_object)
-        self._judge_engine = judge.JudgeEngine(
-            scheduler=self._note_scheduler,
-            score_state=self._score_state,
-        )
-        self._overlay_widget.set_mode(overlay_renderer.OverlayMode.PLAY)
-        self._overlay_widget.set_play_objects(
-            scheduler=self._note_scheduler,
-            score_provider=self._score_state,
+        assert self._harness_controller is not None
+
+        self._learning_session = None
+        self._harness_controller.configure_for_play(
+            chart_source_kind=str(source_kind),
+            chart=chart_object,
+            bpm_guess=float(bpm_guess),
         )
 
         details = f"Play | video={video_id} | diff={difficulty} | chart={source_kind}"
@@ -453,15 +459,9 @@ class AppController(QObject):
         self._set_mode(AppMode.PLAY)
 
     def _enter_learning_mode(self, *, video_id: str, difficulty: str) -> None:
-        self._note_scheduler = None
-        self._judge_engine = None
-        self._score_state = judge.ScoreState()
+        assert self._harness_controller is not None
 
-        self._overlay_widget.set_mode(overlay_renderer.OverlayMode.LEARN)
-        self._overlay_widget.set_play_objects(
-            scheduler=None,
-            score_provider=self._score_state,
-        )
+        self._harness_controller.configure_for_learning(chart_source_kind="learning")
 
         self._learning_session = self._create_learning_session(difficulty=difficulty)
         self._demo_controls_widget.set_status_text(f"Learning | video={video_id} | diff={difficulty}")
@@ -469,7 +469,6 @@ class AppController(QObject):
         self._set_mode(AppMode.LEARNING)
 
     def _create_learning_session(self, *, difficulty: str) -> Any:
-        # Prefer an external learning module if present.
         try:
             import learning_session  # type: ignore
             learning_class = getattr(learning_session, "LearningSession", None)
@@ -481,91 +480,47 @@ class AppController(QObject):
         return BasicLearningSession(difficulty=str(difficulty))
 
     def _pause_playback(self) -> None:
-        self._main_window.pause()
+        if self._harness_controller is not None:
+            self._harness_controller.pause()
         self._refresh_ui_text()
 
     def _resume_playback(self) -> None:
-        self._main_window.play()
+        if self._harness_controller is not None:
+            self._harness_controller.resume()
         self._refresh_ui_text()
 
     def _restart_playback(self) -> None:
-        # Restart always seeks to 0 and resets gameplay state.
-        self._main_window.seek(0.0)
-        self._reset_play_state()
-        self._main_window.play()
+        if self._harness_controller is not None:
+            self._harness_controller.restart()
         self._refresh_ui_text()
 
     def _stop_playback(self) -> None:
-        # Stop policy:
-        # - Always end playback immediately.
-        # - Always return to idle.
-        # - In learning, discard in-memory collected data.
-        self._main_window.pause()
+        if self._harness_controller is not None:
+            self._harness_controller.stop()
         self._stop_active_session(keep_player_loaded=False)
-        self._main_window.set_current_video_id(None)
+        _set_main_window_video_id(self._main_window, None)
         self._main_window.show_idle()
         self._set_mode(AppMode.IDLE)
         self._refresh_ui_text()
 
     def _stop_active_session(self, *, keep_player_loaded: bool) -> None:
         self._learning_session = None
-        self._note_scheduler = None
-        self._judge_engine = None
-        self._score_state = judge.ScoreState()
 
-        self._overlay_widget.set_mode(overlay_renderer.OverlayMode.IDLE)
-        self._overlay_widget.set_play_objects(scheduler=None, score_provider=self._score_state)
+        if not keep_player_loaded and self._harness_controller is not None:
+            self._harness_controller.pause()
+            self._harness_controller.restart()
 
-        if not keep_player_loaded:
-            # There is no "unload" for YouTube, so pause and seek to 0 to approximate.
-            self._main_window.pause()
-            self._main_window.seek(0.0)
-
-    def _reset_play_state(self) -> None:
-        if self._note_scheduler is not None:
-            self._note_scheduler.reset()
-
-        if self._judge_engine is not None:
-            self._judge_engine.reset()
-
-        self._score_state = judge.ScoreState()
-        self._overlay_widget.set_play_objects(scheduler=self._note_scheduler, score_provider=self._score_state)
-
-    # Player callbacks
-
-    def _on_player_ready_changed(self, is_ready: bool) -> None:
-        self._is_player_ready = bool(is_ready)
-        self._game_clock.on_player_ready_changed(bool(is_ready))
-        self._refresh_ui_text()
-
-    def _on_player_time_updated(self, player_time_seconds: float) -> None:
-        player_time_value = float(player_time_seconds)
-
-        # Detect backward jumps (seek, restart, or reload) and reset transient play state.
-        if player_time_value + 0.5 < self._last_player_time_seconds:
-            self._reset_play_state()
-
-        self._last_player_time_seconds = player_time_value
-
-        self._timing_model.update_player_time_seconds(player_time_value)
-        self._game_clock.on_player_time_updated(player_time_value)
+    # -----------------
+    # Player callbacks used for metadata
+    # -----------------
 
     def _on_player_state_changed(self, player_state_info: object) -> None:
-        self._last_player_state_name = str(getattr(player_state_info, "state_name", "UNKNOWN"))
-
         duration_seconds_value = getattr(player_state_info, "duration_seconds", None)
         if duration_seconds_value is not None:
             try:
                 self._last_duration_seconds = float(duration_seconds_value)
             except Exception:
                 pass
-
-        self._game_clock.on_player_state_changed(player_state_info)
-
-        is_ended = bool(getattr(player_state_info, "is_ended", False))
-        if is_ended:
-            self._on_end_of_playback()
-
         self._refresh_ui_text()
 
     def _on_player_error(self, error_message: str) -> None:
@@ -574,37 +529,19 @@ class AppController(QObject):
         self._demo_controls_widget.set_status_text(f"Player error: {cleaned_error}")
         self._refresh_ui_text()
 
+    # -----------------
+    # End of playback
+    # -----------------
+
     def _on_end_of_playback(self) -> None:
         if self._mode == AppMode.LEARNING:
             self._finalize_learning_and_commit_chart()
 
-        # Either way, return to idle after playback ends.
         self._stop_playback()
 
-    # Gameplay tick
-
-    def _on_tick(self) -> None:
-        current_song_time_seconds = float(self._timing_model.song_time_seconds())
-        if self._mode == AppMode.PLAY and self._judge_engine is not None:
-            self._judge_engine.update_for_time(current_song_time_seconds)
-
-    def _on_input_event(self, input_event: object) -> None:
-        current_song_time_seconds = float(self._timing_model.song_time_seconds())
-        if self._mode == AppMode.PLAY and self._judge_engine is not None:
-            judgement_event = self._judge_engine.on_input_event(input_event)
-            if judgement_event is not None:
-                self._overlay_widget.set_recent_judgement(judgement_event)
-                self._demo_controls_widget.set_status_text(f"Judgement: {judgement_event.judgement}")
-            return
-
-        if self._mode == AppMode.LEARNING and self._learning_session is not None:
-            if hasattr(self._learning_session, "on_input_event"):
-                try:
-                    self._learning_session.on_input_event(input_event, current_song_time_seconds)  # type: ignore[misc]
-                except TypeError:
-                    self._learning_session.on_input_event(input_event)  # type: ignore[misc]
-
+    # -----------------
     # Learning finalize
+    # -----------------
 
     def _finalize_learning_and_commit_chart(self) -> None:
         video_id = self._context.video_id
@@ -629,7 +566,6 @@ class AppController(QObject):
 
         output_path = library_index.auto_simfile_path(video_id=video_id)
 
-        # Placeholder metadata. A dedicated learning chunk should supply real values.
         bpm_guess = 120.0
         offset_seconds = 0.0
         generator_version = "desktop_shell_fallback"
@@ -656,7 +592,9 @@ class AppController(QObject):
 
         self._demo_controls_widget.set_status_text(f"Saved learned chart: {output_path}")
 
+    # -----------------
     # UI helpers
+    # -----------------
 
     def _set_mode(self, mode: AppMode) -> None:
         self._mode = mode
@@ -667,25 +605,24 @@ class AppController(QObject):
         if self._session_state is not None:
             self._session_state.set_error_text(error_text)
 
-    def _on_clock_snapshot_updated(self, snapshot: object) -> None:
-        # Reserved for future UI diagnostics; keeping handler to avoid unused connection warnings.
-        _ = snapshot
-
     def _refresh_ui_text(self) -> None:
         video_id = self._context.video_id or "-"
         difficulty = self._context.difficulty
         desired = self._context.desired_playback_state.value
         mode = self._mode.value
-        player_ready = "ready" if self._is_player_ready else "not_ready"
-        player_state = self._last_player_state_name
-        player_time_seconds = self._timing_model.player_time_seconds()
-        song_time_seconds = self._timing_model.song_time_seconds()
+
+        player_time_seconds = 0.0
+        song_time_seconds = 0.0
+        if self._harness_controller is not None:
+            player_time_seconds = float(self._harness_controller.timing_model.player_time_seconds())
+            song_time_seconds = float(self._harness_controller.timing_model.song_time_seconds())
+
         error_text = self._context.last_error_text or ""
 
         status_lines = [
             f"mode={mode} desired={desired}",
             f"video={video_id} diff={difficulty}",
-            f"player={player_state} ({player_ready}) time={player_time_seconds:.2f} song={song_time_seconds:.2f}",
+            f"time player={player_time_seconds:.2f} song={song_time_seconds:.2f}",
         ]
         if error_text:
             status_lines.append(f"error={error_text}")
@@ -695,3 +632,75 @@ class AppController(QObject):
 
         if self._mode == AppMode.IDLE:
             self._main_window.set_idle_state_text(status_text)
+
+
+def _get_player_bridge(window: main_window.MainWindow):
+    # New main_window.py exposes .web_player; older variants used player_bridge().
+    bridge_method = getattr(window, "player_bridge", None)
+    if callable(bridge_method):
+        try:
+            return bridge_method()
+        except Exception:
+            pass
+
+    candidate = getattr(window, "web_player", None)
+    if candidate is not None:
+        return candidate
+
+    return getattr(window, "_web_player", None)
+
+
+def _get_main_window_video_id(window: main_window.MainWindow) -> str:
+    try:
+        value = getattr(window, "current_video_id")
+        if isinstance(value, str):
+            return value
+    except Exception:
+        pass
+    return ""
+
+
+def _set_main_window_video_id(window: main_window.MainWindow, video_id: Optional[str]) -> None:
+    setter = getattr(window, "set_current_video_id", None)
+    if callable(setter):
+        setter(str(video_id or ""))
+        return
+
+
+def _build_harness_ui_proxy(*, demo_widget: demo_controls.DemoControlsWidget):
+    """Build a ui object that matches gameplay_harness.HarnessUiProtocol.
+
+    DemoControlsWidget does not expose QPushButton.clicked signals. AppController receives
+    its typed request signals directly and calls the harness controller methods.
+    For API consistency, we provide hidden button objects and fields, but AppController does not
+    rely on clicking them.
+    """
+    from PyQt6.QtWidgets import QPushButton, QLabel, QLineEdit, QComboBox, QWidget
+
+    class _UiProxy:
+        def __init__(self) -> None:
+            self.root_widget = QWidget()
+            self.video_edit = QLineEdit()
+            self.difficulty_combo = QComboBox()
+            self.difficulty_combo.addItems(["easy", "medium"])
+            self.load_button = QPushButton()
+            self.play_button = QPushButton()
+            self.pause_button = QPushButton()
+            self.resume_button = QPushButton()
+            self.restart_button = QPushButton()
+            self.stop_button = QPushButton()
+            self.status_label = QLabel()
+            self.time_label = QLabel()
+
+    proxy = _UiProxy()
+
+    # Keep status label in sync with the visible demo widget.
+    original_set_status = demo_widget.set_status_text
+
+    def set_status_text(text: str) -> None:
+        original_set_status(str(text))
+        proxy.status_label.setText(str(text))
+
+    demo_widget.set_status_text = set_status_text  # type: ignore[assignment]
+
+    return proxy

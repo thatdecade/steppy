@@ -14,6 +14,13 @@ from __future__ import annotations
 #   - Web server host, port, and YouTube settings drive server and search behavior.
 # - In Desktop shell and orchestration, it is tested for app startup correctness.
 #
+# How to obtain a YouTube Data API key
+# 1) Go to Google Cloud Console.
+# 2) Create (or select) a project.
+# 3) Enable "YouTube Data API v3" for the project.
+# 4) Create an API key in "APIs & Services" -> "Credentials".
+# 5) Put the key in your Steppy config file under: youtube.api_key
+# 
 ########################
 # Design notes:
 # - This module should be the only source of runtime configuration objects (AppConfig).
@@ -98,6 +105,40 @@ def _read_json_file_utf8(file_path: Path) -> Dict[str, Any]:
     return parsed
 
 
+def _write_json_file_utf8(file_path: Path, json_dict: Dict[str, Any]) -> None:
+    parent_dir = file_path.parent
+    try:
+        parent_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exception:
+        raise ValueError(f"Failed to create config directory: {parent_dir}: {exception}") from exception
+
+    serialized = json.dumps(json_dict, indent=2, sort_keys=True) + "\n"
+    temp_path = file_path.with_name(file_path.name + ".tmp")
+    try:
+        temp_path.write_text(serialized, encoding="utf-8")
+        os.replace(str(temp_path), str(file_path))
+    except Exception as exception:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except Exception:
+            pass
+        raise ValueError(f"Failed to write config file as UTF-8: {file_path}: {exception}") from exception
+
+
+def _default_config_dict() -> Dict[str, Any]:
+    default_config = AppConfig()
+    return _model_dump(default_config)
+
+
+def _ensure_config_file_exists(config_path: Path) -> None:
+    if config_path.exists():
+        if not config_path.is_file():
+            raise ValueError(f"Config path exists but is not a file: {config_path}")
+        return
+    _write_json_file_utf8(config_path, _default_config_dict())
+
+
 def _resolve_config_path() -> Path:
     env_path = (os.getenv("STEPPY_CONFIG_PATH") or "").strip()
     if env_path:
@@ -167,6 +208,9 @@ def _apply_environment_overrides(json_dict: Dict[str, Any]) -> Dict[str, Any]:
 
 def load_config(config_path: Optional[Path] = None) -> Tuple[AppConfig, Path]:
     resolved_path = config_path if config_path is not None else _resolve_config_path()
+
+    _ensure_config_file_exists(resolved_path)
+
     json_dict = _read_json_file_utf8(resolved_path)
     json_dict = _apply_environment_overrides(json_dict)
 
