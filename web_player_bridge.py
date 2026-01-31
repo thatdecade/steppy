@@ -47,14 +47,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 import re
 from typing import Any, Optional
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal, QUrl  # type: ignore
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal, QUrl
+from PyQt6.QtWebEngineCore import QWebEngineSettings
+from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import QFrame, QLabel, QStackedLayout, QVBoxLayout, QWidget
-from PyQt6.QtWebEngineWidgets import QWebEngineView  # type: ignore
 
 
 _YOUTUBE_ID_REGEX = re.compile(r"^[a-zA-Z0-9_-]{11}$")
@@ -97,6 +96,22 @@ def _state_name_for_youtube_state_code(state_code: int) -> str:
     return mapping.get(int(state_code), "unknown")
 
 
+def _friendly_error_for_iframe_api_code(error_code: int) -> str:
+    # YouTube IFrame API error codes:
+    # 2 invalid parameter value
+    # 5 HTML5 player error
+    # 100 video not found / removed
+    # 101 and 150 embedding not allowed
+    mapping = {
+        2: "Invalid video id or parameter",
+        5: "HTML5 player error",
+        100: "Video not found or removed",
+        101: "Embedding disabled for this video",
+        150: "Embedding disabled for this video",
+    }
+    return mapping.get(int(error_code), f"YouTube player error code {int(error_code)}")
+
+
 @dataclass(frozen=True)
 class PlayerStateInfo:
     state_code: int
@@ -107,124 +122,25 @@ class PlayerStateInfo:
     is_ended: bool
 
 
-class _MockBackend(QObject):
-    """Lightweight timer backend that only emits time and state updates.
-
-    This backend exists purely as a fallback when WebEngine is not usable or when
-    the input cannot be parsed as a YouTube id. It does not draw a video.
-    """
-
-    timeUpdated = pyqtSignal(float)
-    stateChanged = pyqtSignal(object)
-    playerReadyChanged = pyqtSignal(bool)
-    errorOccurred = pyqtSignal(str)
-
-    def __init__(self, *, time_step_seconds: float = 1.0 / 60.0) -> None:
-        super().__init__()
-        self._time_step_seconds = float(time_step_seconds)
-        self._video_id: Optional[str] = None
-        self._duration_seconds: Optional[float] = None
-        self._player_time_seconds = 0.0
-        self._is_ready = False
-        self._state_code = -1
-        self._tick_timer = QTimer()
-        self._tick_timer.setInterval(int(round(self._time_step_seconds * 1000.0)))
-        self._tick_timer.timeout.connect(self._on_tick)
-
-    def backend_name(self) -> str:
-        return "mock"
-
-    def is_ready(self) -> bool:
-        return bool(self._is_ready)
-
-    def load_video(self, *, video_id_or_url: str, start_seconds: float, autoplay: bool) -> None:
-        requested_video_id = str(video_id_or_url or "").strip() or None
-        if requested_video_id is None:
-            self.errorOccurred.emit("Missing video id")
-            return
-
-        self._video_id = requested_video_id
-        self._duration_seconds = None
-        self._player_time_seconds = max(0.0, float(start_seconds))
-        self._is_ready = True
-        self._state_code = 1 if bool(autoplay) else 2
-        self.playerReadyChanged.emit(True)
-        self._emit_state_changed()
-
-        self.timeUpdated.emit(self._player_time_seconds)
-        if bool(autoplay):
-            self._tick_timer.start()
-        else:
-            self._tick_timer.stop()
-
-    def play(self) -> None:
-        if self._video_id is None:
-            return
-        self._state_code = 1
-        self._emit_state_changed()
-        self._tick_timer.start()
-
-    def pause(self) -> None:
-        if self._video_id is None:
-            return
-        self._state_code = 2
-        self._emit_state_changed()
-        self._tick_timer.stop()
-
-    def seek(self, seconds: float) -> None:
-        if self._video_id is None:
-            return
-        self._player_time_seconds = max(0.0, float(seconds))
-        self.timeUpdated.emit(self._player_time_seconds)
-        self._emit_state_changed()
-
-    def set_muted(self, is_muted: bool) -> None:
-        _ = is_muted
-
-    def set_volume(self, volume_percent: int) -> None:
-        _ = volume_percent
-
-    def _emit_state_changed(self) -> None:
-        state_code = int(self._state_code)
-        state_name = _state_name_for_youtube_state_code(state_code)
-        state_info = PlayerStateInfo(
-            state_code=state_code,
-            state_name=state_name,
-            player_time_seconds=float(self._player_time_seconds),
-            duration_seconds=self._duration_seconds,
-            video_id=self._video_id,
-            is_ended=(state_code == 0),
-        )
-        self.stateChanged.emit(state_info)
-
-    def _on_tick(self) -> None:
-        if self._video_id is None:
-            return
-        if int(self._state_code) != 1:
-            return
-        self._player_time_seconds += float(self._time_step_seconds)
-        self.timeUpdated.emit(float(self._player_time_seconds))
-
-
 class _WebEngineBackend(QObject):
-    """Backend that embeds the YouTube IFrame API in a QWebEngineView."""
-
     timeUpdated = pyqtSignal(float)
     stateChanged = pyqtSignal(object)
     playerReadyChanged = pyqtSignal(bool)
     errorOccurred = pyqtSignal(str)
 
-    def __init__(self, view: "QWebEngineView") -> None:
+    def __init__(self, view: QWebEngineView) -> None:
         super().__init__()
         self._view = view
+
         self._html_loaded = False
-        self._has_active_video = False
+        self._has_pending_video_request = False
 
         self._video_id: Optional[str] = None
         self._duration_seconds: Optional[float] = None
         self._last_emitted_time_seconds: Optional[float] = None
         self._last_emitted_state_code: Optional[int] = None
         self._last_emitted_ready: Optional[bool] = None
+        self._last_emitted_error_code: Optional[int] = None
 
         self._poll_timer = QTimer()
         self._poll_timer.setInterval(50)
@@ -233,6 +149,8 @@ class _WebEngineBackend(QObject):
         self._pending_js_calls: list[str] = []
 
         self._view.loadFinished.connect(self._on_load_finished)
+
+        self._configure_view_settings()
         self._load_bootstrap_html()
 
     def backend_name(self) -> str:
@@ -249,13 +167,13 @@ class _WebEngineBackend(QObject):
 
         self._video_id = extracted_video_id
         self._duration_seconds = None
-        self._has_active_video = True
+        self._has_pending_video_request = True
 
         start_seconds_value = max(0.0, float(start_seconds))
         autoplay_flag = "true" if bool(autoplay) else "false"
 
         js = (
-            "window.steppyLoadVideo("
+            "window.steppyRequestLoadVideo("
             + repr(extracted_video_id)
             + ", "
             + repr(start_seconds_value)
@@ -265,7 +183,6 @@ class _WebEngineBackend(QObject):
         )
         self._run_js_or_queue(js)
 
-        # Ensure we start polling after a load request, even if autoplay is False.
         self._poll_timer.start()
         self._poll_snapshot()
 
@@ -290,9 +207,20 @@ class _WebEngineBackend(QObject):
         volume_value = int(max(0, min(100, int(volume_percent))))
         self._run_js_or_queue("window.steppySetVolume(" + repr(volume_value) + ");")
 
+    def _configure_view_settings(self) -> None:
+        settings = self._view.settings()
+
+        # Match the old stable harness behavior:
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, True)
+
     def _load_bootstrap_html(self) -> None:
-        # This HTML keeps all protocol details internal. Python only calls the
-        # window.steppy* functions and polls window.steppyGetSnapshot().
+        # setHtml() uses base_url as the document URL.
+        # Keep the origin on localhost to avoid youtube.com origin edge cases.
+        base_url = QUrl("http://localhost/")
+
         html = r"""
 <!doctype html>
 <html>
@@ -309,43 +237,78 @@ html, body { margin:0; padding:0; width:100%; height:100%; background:#111; over
 <script src="https://www.youtube.com/iframe_api"></script>
 <script>
 let steppyPlayer = null;
+let steppyApiReady = false;
 let steppyReady = false;
+let steppyPendingLoad = null;
+let steppyLastErrorCode = null;
 
-function _ensurePlayer(videoId, startSeconds, autoplay) {
-  if (steppyPlayer !== null) {
-    try {
-      steppyPlayer.loadVideoById({videoId: videoId, startSeconds: startSeconds});
-      if (!autoplay) { steppyPlayer.pauseVideo(); }
-    } catch (e) {}
-    return;
-  }
+function _createPlayerIfNeeded(initialVideoId) {
+  if (!steppyApiReady) { return; }
+  if (steppyPlayer !== null) { return; }
+
   try {
     steppyPlayer = new YT.Player('player', {
       width: '100%',
       height: '100%',
-      videoId: videoId,
+      videoId: initialVideoId,
       playerVars: {
         playsinline: 1,
-        autoplay: autoplay ? 1 : 0,
+        autoplay: 0,
         controls: 1,
-        start: Math.floor(startSeconds)
+        rel: 0,
+        origin: window.location.origin
       },
       events: {
         'onReady': function(event) {
           steppyReady = true;
+          _applyPendingLoadIfAny();
+        },
+        'onError': function(event) {
+          try { steppyLastErrorCode = event.data; } catch (e) { steppyLastErrorCode = null; }
         },
         'onStateChange': function(event) {
-          // state is polled by Python, so no direct bridge here.
+          // State is polled by Python.
         }
       }
     });
   } catch (e) {
-    // Leave steppyReady false. Python will surface a ready false snapshot.
+    steppyPlayer = null;
   }
 }
 
-window.steppyLoadVideo = function(videoId, startSeconds, autoplay) {
-  _ensurePlayer(videoId, startSeconds, autoplay);
+function _applyPendingLoadIfAny() {
+  if (!steppyApiReady) { return; }
+  if (!steppyPendingLoad) { return; }
+
+  const request = steppyPendingLoad;
+  steppyPendingLoad = null;
+
+  _createPlayerIfNeeded(request.videoId);
+  if (!steppyPlayer) { return; }
+
+  try {
+    steppyPlayer.loadVideoById({videoId: request.videoId, startSeconds: request.startSeconds});
+    if (!request.autoplay) { steppyPlayer.pauseVideo(); }
+  } catch (e) {}
+}
+
+window.onYouTubeIframeAPIReady = function() {
+  steppyApiReady = true;
+  if (steppyPendingLoad) {
+    _applyPendingLoadIfAny();
+  } else {
+    _createPlayerIfNeeded('dQw4w9WgXcQ');
+    try { if (steppyPlayer) { steppyPlayer.pauseVideo(); } } catch (e) {}
+  }
+};
+
+window.steppyRequestLoadVideo = function(videoId, startSeconds, autoplay) {
+  steppyPendingLoad = {
+    videoId: String(videoId || ''),
+    startSeconds: Number(startSeconds || 0),
+    autoplay: !!autoplay
+  };
+  _applyPendingLoadIfAny();
 };
 
 window.steppyPlay = function() {
@@ -357,7 +320,7 @@ window.steppyPause = function() {
 };
 
 window.steppySeek = function(seconds) {
-  if (steppyPlayer) { try { steppyPlayer.seekTo(seconds, true); } catch (e) {} }
+  if (steppyPlayer) { try { steppyPlayer.seekTo(Number(seconds || 0), true); } catch (e) {} }
 };
 
 window.steppySetMuted = function(isMuted) {
@@ -369,13 +332,14 @@ window.steppySetMuted = function(isMuted) {
 
 window.steppySetVolume = function(volumePercent) {
   if (!steppyPlayer) { return; }
-  try { steppyPlayer.setVolume(volumePercent); } catch (e) {}
+  try { steppyPlayer.setVolume(Number(volumePercent || 0)); } catch (e) {}
 };
 
 window.steppyGetSnapshot = function() {
   let stateCode = -2;
   let currentTime = 0.0;
   let duration = null;
+
   try {
     if (steppyPlayer) {
       stateCode = steppyPlayer.getPlayerState();
@@ -383,25 +347,35 @@ window.steppyGetSnapshot = function() {
       duration = steppyPlayer.getDuration();
     }
   } catch (e) {}
+
   if (typeof(duration) !== 'number' || !(duration > 0)) {
     duration = null;
   }
+
+  let errorCode = null;
+  try {
+    if (typeof(steppyLastErrorCode) === 'number') {
+      errorCode = steppyLastErrorCode;
+    }
+  } catch (e) {}
+
   return {
+    api_ready: !!steppyApiReady,
     ready: !!steppyReady,
     state_code: stateCode,
     time_seconds: currentTime,
-    duration_seconds: duration
+    duration_seconds: duration,
+    error_code: errorCode
   };
 };
 </script>
 </body>
 </html>
 """
-        base_url = QUrl("https://www.youtube.com")
         try:
             self._view.setHtml(html, base_url)
         except Exception as exc:
-            self.errorOccurred.emit(f"Failed to initialize web player: {exc!r}")
+            self.errorOccurred.emit(f"Failed to initialize web player HTML: {exc!r}")
 
     def _on_load_finished(self, ok: bool) -> None:
         self._html_loaded = bool(ok)
@@ -429,9 +403,8 @@ window.steppyGetSnapshot = function() {
     def _poll_snapshot(self) -> None:
         if not self._html_loaded:
             return
-        if not self._has_active_video:
+        if not self._has_pending_video_request:
             return
-
         try:
             self._view.page().runJavaScript("window.steppyGetSnapshot();", self._on_snapshot_result)
         except Exception as exc:
@@ -456,6 +429,21 @@ window.steppyGetSnapshot = function() {
                     duration_seconds_value = None
             except Exception:
                 duration_seconds_value = None
+
+        error_code_raw = result.get("error_code", None)
+        error_code_value: Optional[int]
+        if error_code_raw is None:
+            error_code_value = None
+        else:
+            try:
+                error_code_value = int(error_code_raw)
+            except Exception:
+                error_code_value = None
+
+        if error_code_value is not None:
+            if self._last_emitted_error_code is None or int(error_code_value) != int(self._last_emitted_error_code):
+                self._last_emitted_error_code = int(error_code_value)
+                self.errorOccurred.emit(_friendly_error_for_iframe_api_code(int(error_code_value)))
 
         if self._last_emitted_ready is None or ready_value != bool(self._last_emitted_ready):
             self._last_emitted_ready = bool(ready_value)
@@ -488,8 +476,6 @@ window.steppyGetSnapshot = function() {
 
 
 class WebPlayerBridge(QFrame):
-    """Qt widget that exposes a stable player control API over a YouTube player."""
-
     timeUpdated = pyqtSignal(float)
     stateChanged = pyqtSignal(object)
     playerReadyChanged = pyqtSignal(bool)
@@ -498,143 +484,104 @@ class WebPlayerBridge(QFrame):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent=parent)
 
-        self._web_view: Optional["QWebEngineView"] = None
+        self._web_view: Optional[QWebEngineView] = None
         self._web_backend: Optional[_WebEngineBackend] = None
-        self._mock_backend = _MockBackend()
+        self._active_backend_name = "webengine"
 
-        self._active_backend_name = "mock"
-
-        # Display widgets:
-        self._mock_label = QLabel("WebPlayerBridge backend: mock")
-        self._mock_label.setWordWrap(True)
-        self._mock_label.setFont(QFont("Consolas", 10))
-        self._mock_label.setMinimumHeight(80)
+        self._status_label = QLabel("WebPlayerBridge: initializing")
+        self._status_label.setWordWrap(True)
 
         self._stack_layout = QStackedLayout()
-        self._mock_widget = QWidget()
-        mock_layout = QVBoxLayout()
-        mock_layout.setContentsMargins(10, 10, 10, 10)
-        mock_layout.addWidget(self._mock_label)
-        mock_layout.addStretch(1)
-        self._mock_widget.setLayout(mock_layout)
-        self._stack_layout.addWidget(self._mock_widget)
+        self._status_widget = QWidget()
+        status_layout = QVBoxLayout()
+        status_layout.setContentsMargins(10, 10, 10, 10)
+        status_layout.addWidget(self._status_label)
+        status_layout.addStretch(1)
+        self._status_widget.setLayout(status_layout)
+        self._stack_layout.addWidget(self._status_widget)
 
-        if self._should_enable_webengine():
+        try:
             self._web_view = QWebEngineView()
             self._web_backend = _WebEngineBackend(self._web_view)
             self._stack_layout.addWidget(self._web_view)
+
+            self._web_backend.timeUpdated.connect(self.timeUpdated)
+            self._web_backend.stateChanged.connect(self.stateChanged)
+            self._web_backend.playerReadyChanged.connect(self.playerReadyChanged)
+            self._web_backend.errorOccurred.connect(self.errorOccurred)
+            self._web_backend.errorOccurred.connect(self._on_backend_error)
+
+            self._stack_layout.setCurrentIndex(1)
+            self._status_label.setText("WebPlayerBridge backend: webengine")
+        except Exception as exc:
+            self._active_backend_name = "unavailable"
+            self._stack_layout.setCurrentIndex(0)
+            self._status_label.setText(f"WebPlayerBridge failed to initialize: {exc!r}")
 
         root_layout = QVBoxLayout()
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.addLayout(self._stack_layout)
         self.setLayout(root_layout)
 
-        self._connect_backend_signals(self._mock_backend)
-        if self._web_backend is not None:
-            self._connect_backend_signals(self._web_backend)
-
-        self._set_active_backend("mock")
-
-    def _should_enable_webengine(self) -> bool:
-        # WebEngine is always preferred when available.
-        # The environment is no longer used to force a mock backend.
-        return True
-
-    def _connect_backend_signals(self, backend: QObject) -> None:
-        backend.timeUpdated.connect(self.timeUpdated)  # type: ignore[attr-defined]
-        backend.stateChanged.connect(self.stateChanged)  # type: ignore[attr-defined]
-        backend.playerReadyChanged.connect(self.playerReadyChanged)  # type: ignore[attr-defined]
-        backend.errorOccurred.connect(self.errorOccurred)  # type: ignore[attr-defined]
-
     def backend_name(self) -> str:
         return str(self._active_backend_name)
 
     def load_video(self, *, video_id_or_url: str, start_seconds: float = 0.0, autoplay: bool = True) -> None:
+        if self._web_backend is None:
+            self.errorOccurred.emit("Web player backend is unavailable")
+            return
+
         requested_text = str(video_id_or_url or "").strip()
         if not requested_text:
             self.errorOccurred.emit("Missing video id")
             return
 
-        normalized_text = requested_text.lower()
+        if requested_text.strip().lower() == "test":
+            requested_text = "dQw4w9WgXcQ"
 
-        # Special test path now uses a real YouTube id so harness runs exercise the real backend.
-        if normalized_text == "test":
-            effective_video_id = "dQw4w9WgXcQ"
-        else:
-            extracted_video_id = _extract_video_id(requested_text)
-            if extracted_video_id is None:
-                # If the id cannot be parsed, fall back to the lightweight timer backend
-                # so chart timing can still be exercised.
-                self._set_active_backend("mock")
-                self._mock_backend.load_video(
-                    video_id_or_url=requested_text,
-                    start_seconds=start_seconds,
-                    autoplay=autoplay,
-                )
-                return
-            effective_video_id = extracted_video_id
-
-        if self._web_backend is not None and self._should_enable_webengine():
-            self._set_active_backend("webengine")
-            self._web_backend.load_video(
-                video_id_or_url=effective_video_id,
-                start_seconds=start_seconds,
-                autoplay=autoplay,
-            )
-            return
-
-        # Last resort: if the web backend is not available, keep using the timer backend.
-        self._set_active_backend("mock")
-        self._mock_backend.load_video(
+        self._status_label.setText("WebPlayerBridge backend: webengine")
+        self._stack_layout.setCurrentIndex(1)
+        self._web_backend.load_video(
             video_id_or_url=requested_text,
-            start_seconds=start_seconds,
-            autoplay=autoplay,
+            start_seconds=float(start_seconds),
+            autoplay=bool(autoplay),
         )
 
     def play(self) -> None:
-        if self._active_backend_name == "webengine" and self._web_backend is not None:
-            self._web_backend.play()
+        if self._web_backend is None:
             return
-        self._mock_backend.play()
+        self._web_backend.play()
 
     def pause(self) -> None:
-        if self._active_backend_name == "webengine" and self._web_backend is not None:
-            self._web_backend.pause()
+        if self._web_backend is None:
             return
-        self._mock_backend.pause()
+        self._web_backend.pause()
 
     def seek(self, seconds: float) -> None:
-        if self._active_backend_name == "webengine" and self._web_backend is not None:
-            self._web_backend.seek(seconds)
+        if self._web_backend is None:
             return
-        self._mock_backend.seek(seconds)
+        self._web_backend.seek(float(seconds))
 
     def set_muted(self, is_muted: bool) -> None:
-        if self._active_backend_name == "webengine" and self._web_backend is not None:
-            self._web_backend.set_muted(is_muted)
+        if self._web_backend is None:
             return
-        self._mock_backend.set_muted(is_muted)
+        self._web_backend.set_muted(bool(is_muted))
 
     def set_volume(self, volume_percent: int) -> None:
-        if self._active_backend_name == "webengine" and self._web_backend is not None:
-            self._web_backend.set_volume(volume_percent)
+        if self._web_backend is None:
             return
-        self._mock_backend.set_volume(volume_percent)
+        self._web_backend.set_volume(int(volume_percent))
 
-    def _set_active_backend(self, backend_name: str) -> None:
-        backend_name_text = str(backend_name or "").strip().lower()
-        if backend_name_text == "webengine" and self._web_backend is not None:
-            self._active_backend_name = "webengine"
-            self._stack_layout.setCurrentIndex(1)
-            return
-
-        self._active_backend_name = "mock"
-        self._stack_layout.setCurrentIndex(0)
+    def _on_backend_error(self, message: str) -> None:
+        self._status_label.setText(f"WebPlayerBridge error: {message}")
 
 
 def main() -> int:
     import sys
+    from PyQt6.QtCore import QCoreApplication, Qt
     from PyQt6.QtWidgets import QApplication
+
+    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
 
     app = QApplication(sys.argv)
 
@@ -642,8 +589,6 @@ def main() -> int:
     widget.resize(960, 540)
     widget.show()
 
-    # Simple smoke behavior: start with the special test id.
-    # This now maps to the real YouTube id dQw4w9WgXcQ.
     widget.load_video(video_id_or_url="test", autoplay=False)
 
     return int(app.exec())
