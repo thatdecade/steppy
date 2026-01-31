@@ -184,10 +184,8 @@ def _run_gui() -> int:
             self._bridge.stateChanged.connect(self._on_player_state_changed)
             self._bridge.errorOccurred.connect(self._on_player_error)
 
-            # Debug tracking for player state and time updates
-            self._last_player_state_code: Optional[int] = None
+            # Minimal tracking for state based behavior
             self._last_player_state_name: str = "unknown"
-            self._debug_timeupdate_count: int = 0
 
             self._overlay = overlay_renderer.GameplayOverlayWidget(
                 self._timing.song_time_seconds,
@@ -254,8 +252,6 @@ def _run_gui() -> int:
 
             self._miss_timer = self.startTimer(16)
 
-            print("[HarnessDebug] GameplayHarnessWindow initialized")
-
         def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # type: ignore[override]
             if event.type() == QEvent.Type.KeyPress:
                 if self._router.handle_key_press(event):  # type: ignore[arg-type]
@@ -278,7 +274,6 @@ def _run_gui() -> int:
         def _set_status(self, text: str) -> None:
             self._status_label.setText(str(text))
             self._overlay.set_state_text(str(text))
-            print(f"[HarnessDebug] status: {text}")
 
         def _update_time_label(self) -> None:
             player_time_seconds_value = float(self._timing.player_time_seconds())
@@ -292,12 +287,6 @@ def _run_gui() -> int:
             difficulty_text = str(self._difficulty_combo.currentText()).strip().lower()
             self._state.video_id = video_id_or_url or "test"
 
-            print(
-                f"[HarnessDebug] Load clicked, video_id_or_url={self._state.video_id!r}, "
-                f"difficulty={difficulty_text!r}"
-            )
-
-            # Always load the player, even when chart data is missing
             self._bridge.load_video(
                 video_id_or_url=self._state.video_id,
                 start_seconds=0.0,
@@ -308,13 +297,11 @@ def _run_gui() -> int:
             self._state.last_error = ""
             self._state.is_paused = False
 
-            # Reset timing and debug tracking
+            # Reset timing and state tracking
             self._timing.update_player_time_seconds(0.0)
             self._update_time_label()
 
-            self._last_player_state_code = None
             self._last_player_state_name = "unknown"
-            self._debug_timeupdate_count = 0
 
             if self._state.video_id.strip().lower() == "test":
                 chart = _build_gameplay_chart_from_test_chart(self._state.difficulty)
@@ -347,7 +334,6 @@ def _run_gui() -> int:
             self.installEventFilter(self)
 
         def _on_play_clicked(self) -> None:
-            print("[HarnessDebug] Play clicked")
             self._state.is_paused = False
             self._bridge.play()
             if self._state.chart_source_kind == "test":
@@ -356,14 +342,11 @@ def _run_gui() -> int:
                 self._set_status("Learning (playing)")
 
         def _on_pause_clicked(self) -> None:
-            print("[HarnessDebug] Pause clicked")
             self._state.is_paused = True
             self._bridge.pause()
             self._set_status("Paused (inputs flash only)")
 
         def _on_restart_clicked(self) -> None:
-            print("[HarnessDebug] _on_restart_clicked invoked")
-            # Restart the pipeline and timer
             self._bridge.seek(0.0)
             self._timing.update_player_time_seconds(0.0)
             self._update_time_label()
@@ -375,7 +358,6 @@ def _run_gui() -> int:
             self._set_status("Restarted")
 
         def _on_stop_clicked(self) -> None:
-            print("[HarnessDebug] Stop clicked")
             self._state.is_paused = True
             self._bridge.pause()
             self._set_status("Stopped")
@@ -385,25 +367,10 @@ def _run_gui() -> int:
             self._timing.update_player_time_seconds(float(player_time_seconds))
             current_player_time_seconds = self._timing.player_time_seconds()
 
-            self._debug_timeupdate_count += 1
-
-            print(
-                "[HarnessDebug] timeUpdated "
-                f"count={self._debug_timeupdate_count} "
-                f"param={player_time_seconds:.3f} "
-                f"previous={previous_player_time_seconds:.3f} "
-                f"current={current_player_time_seconds:.3f} "
-                f"last_state={self._last_player_state_name!r}"
-            )
-
             self._update_time_label()
 
             # If we already saw ended, do not apply backward restart logic
             if self._last_player_state_name == "ended":
-                print(
-                    "[HarnessDebug] timeUpdated after ended state, "
-                    "skipping backward jump restart logic"
-                )
                 return
 
             # Backward jump protection with tolerance
@@ -411,39 +378,14 @@ def _run_gui() -> int:
                 backward_delta_seconds = previous_player_time_seconds - current_player_time_seconds
                 backward_restart_threshold_seconds = 2.0
 
-                print(
-                    "[HarnessDebug] Detected backward jump in timeUpdated, "
-                    f"delta={backward_delta_seconds:.3f} seconds, "
-                    f"threshold={backward_restart_threshold_seconds:.3f}"
-                )
-
                 if backward_delta_seconds > backward_restart_threshold_seconds:
-                    print(
-                        "[HarnessDebug] Backward jump exceeds threshold, "
-                        "calling _on_restart_clicked"
-                    )
                     self._on_restart_clicked()
-                else:
-                    print(
-                        "[HarnessDebug] Backward jump is within jitter threshold, "
-                        "ignoring restart"
-                    )
 
         def _on_player_state_changed(self, info) -> None:
-            state_code = getattr(info, "state_code", None)
             state_name = getattr(info, "state_name", "unknown")
             is_ended = bool(getattr(info, "is_ended", False))
 
-            self._last_player_state_code = state_code
             self._last_player_state_name = state_name
-
-            print(
-                "[HarnessDebug] stateChanged "
-                f"code={state_code} "
-                f"name={state_name!r} "
-                f"is_ended={is_ended} "
-                f"current_player_time={self._timing.player_time_seconds():.3f}"
-            )
 
             if is_ended:
                 self._set_status("Ended")
@@ -451,7 +393,6 @@ def _run_gui() -> int:
 
         def _on_player_error(self, message: str) -> None:
             self._state.last_error = str(message)
-            print(f"[HarnessDebug] player error: {message}")
             self._set_status(f"Player error: {message}")
 
         def _on_input_event(self, input_event: gameplay_models.InputEvent) -> None:
