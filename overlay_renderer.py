@@ -174,10 +174,19 @@ class GameplayOverlayWidget(QWidget):
         bottom = float(self._config.bottom_margin_pixels)
         spacing = float(self._config.lane_spacing_pixels)
 
+        lanes_count = int(self._config.lanes_count)
         receptor_y = height - bottom
+
+        if lanes_count <= 0:
+            return []
+
+        total_span = float(max(0, lanes_count - 1)) * spacing
+        centered_start_x = (width - total_span) * 0.5
+        start_x = max(side, centered_start_x)
+
         positions: List[QPointF] = []
-        for lane in range(int(self._config.lanes_count)):
-            x = side + (float(lane) * spacing)
+        for lane_index in range(lanes_count):
+            x = start_x + (float(lane_index) * spacing)
             positions.append(QPointF(x, receptor_y))
         return positions
 
@@ -193,8 +202,16 @@ class GameplayOverlayWidget(QWidget):
         receptor_size = float(self._config.receptor_size_pixels)
 
         for lane_index, receptor_center in enumerate(lane_centers):
-            flash_active = (song_time_seconds - self._lane_flashes[lane_index].last_hit_time_seconds) <= 0.10
+            flash_active = (song_time_seconds - self._lane_flashes[lane_index].last_hit_time_seconds) <= 0.18
             if self._graphics_pack is not None:
+                if flash_active:
+                    painter.save()
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(255, 255, 255, 70))
+                    radius = receptor_size * 0.62
+                    painter.drawEllipse(receptor_center, radius, radius)
+                    painter.restore()
+
                 self._graphics_pack.draw_receptor(
                     painter,
                     lane_index=lane_index,

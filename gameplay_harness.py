@@ -42,7 +42,7 @@ from typing import Optional, Tuple, List
 
 @dataclass
 class HarnessState:
-    video_id: str = "dQw4w9WgXcQ"
+    video_id: str = "test"
     difficulty: str = "easy"
     bpm_guess: float = 120.0
     chart_source_kind: str = "test"
@@ -196,7 +196,6 @@ def _run_gui() -> int:
             stop_button.clicked.connect(self._on_stop_clicked)
 
             self._status_label = QLabel("", controls)
-            self._status_label.setStyleSheet("color: white;")
 
             controls_layout.addWidget(QLabel("Video:", controls))
             controls_layout.addWidget(self._video_edit)
@@ -213,7 +212,6 @@ def _run_gui() -> int:
             layout.addWidget(self._overlay, stretch=4)
             layout.addWidget(self._status_label)
 
-            #root.setStyleSheet("background: #101014;")
             self.setCentralWidget(root)
 
             self._miss_timer = self.startTimer(16)
@@ -245,6 +243,12 @@ def _run_gui() -> int:
             video_id_or_url = str(self._video_edit.text()).strip()
             difficulty = str(self._difficulty_combo.currentText()).strip().lower()
             self._state.video_id = video_id_or_url or "test"
+
+            # Always load the player, even when chart data is missing (Learning mode).
+            self._bridge.load_video(video_id_or_url=self._state.video_id, start_seconds=0.0, autoplay=False)
+
+
+
             self._state.difficulty = difficulty or "easy"
             self._state.last_error = ""
 
@@ -268,7 +272,6 @@ def _run_gui() -> int:
                 self._state.chart_source_kind = "learning"
                 self._set_status("Learning overlay (no chart in this chunk)")
 
-            self._bridge.load_video(video_id_or_url=self._state.video_id, start_seconds=0.0, autoplay=True)
             self.installEventFilter(self)
 
         def _on_play_clicked(self) -> None:
@@ -329,7 +332,12 @@ def _run_gui() -> int:
                 if judgement_event is None:
                     self._signals.strayPress.emit(input_event)
 
-    app = QApplication([])
+    import sys
+
+    from PyQt6.QtCore import QCoreApplication
+    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
+
+    app = QApplication(sys.argv)
     window = GameplayHarnessWindow()
     window.resize(980, 820)
     window.show()
