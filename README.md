@@ -1,4 +1,4 @@
-## Steppy
+## Steppy - Work In Progress
 
 Steppy is a rhythm game for dance pads.  This is a personal project, feel free to modify for your own purposes in keeping with MIT license.
 
@@ -6,6 +6,12 @@ Steppy is a rhythm game for dance pads.  This is a personal project, feel free t
 * Youtube sourced songs
 
 When idle or between songs, Steppy displays a QR code that opens a local webpage for song selection and controls.
+
+### Work In Progress Notes
+
+Most of the modules work individually as proof of concepts, but the app has not been integrated yet.  So running steppy.py doesn't do much.  
+
+If you would like to play around with this code, I suggest you run each module individually to get a feel with what each module does.
 
 ---
 
